@@ -1,0 +1,16 @@
+{
+  "name": "lakeloui-se-orchestrator",
+  "version": "0.1.0",
+  "description": "Mono-Lambda orchestrator for lakeloui.se — EventBridge every 15 min",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "tsc",
+    "invoke": "node dist/handler.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/aws-lambda": "^3.0.0",
+    "typescript": "^5.7.2"
+  }
+}

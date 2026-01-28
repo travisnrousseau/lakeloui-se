@@ -4,6 +4,7 @@ build/
 .terraform/
 *.tfstate
 *.tfstate.*
+infrastructure/terraform/build/
 .env
 .env.local
 .env.*.local

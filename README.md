@@ -17,9 +17,20 @@ Honest, independent "Where & Why" weather and snow report for Lake Louise. Mount
 ## Repo layout
 
 ```
-backend/       # Mono-Lambda orchestrator (Node 24 / TS)
-frontend/      # Alpine.js + Vite static site
+backend/         # Mono-Lambda orchestrator (Node 24 / TS)
+frontend/       # Alpine.js + Vite static site
 infrastructure/ # Terraform (AWS ca-west-1)
-scripts/       # Historical backfill, one-off tooling
-docs/          # ARCHITECTURE, CONTENT_LOGIC
+scripts/        # Historical backfill (Python 3.12), one-off tooling
+docs/           # ARCHITECTURE, CONTENT_LOGIC
+flake.nix       # Dev env: Terraform, Node 24, AWS CLI, Python 3.12
 ```
+
+## Development
+
+Enter the Nix dev shell (Terraform, Node.js 24, AWS CLI, Python 3.12):
+
+```bash
+nix develop
+```
+
+Before first Terraform apply: `cd backend && npm ci && npm run build`.
