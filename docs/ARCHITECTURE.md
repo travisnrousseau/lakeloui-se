@@ -13,7 +13,12 @@
     2. Fetch WaterOffice GOES (Pika/Skoki/Rivers).
     3. If 03:00 - 15:00 MST, fetch Resort XML. Check MD5 Checksum; if unchanged, skip AI processing.
     4. Validate "Groomed & Open" status for any terrain recommendations.
-    5. Forecast: Clip HRDPS 2.5km GRIB2 for vertical inversion analysis.
+    5. Forecast: Clip HRDPS 2.5km GRIB2 for:
+       - **Inversion analysis:** 850mb vs 700mb temperatures (inversion strength).
+       - **Orographic lift:** 700mb wind direction/speed (≥10 mph = enhancement).
+       - **Chinook detection:** W/SW wind + rapid temp rise + humidity drop.
+       - **Freezing level:** Temperature profile (interpolate 0°C altitude).
+       - **Valley winds:** Surface wind speed (local vs synoptic dominance).
     6. AI: Gemini 3 Flash writes the script (Winter only).
     7. Compile: Pre-render `index.html` with data/images and push to S3.
 
