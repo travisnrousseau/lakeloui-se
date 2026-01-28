@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.terraform/
+*.tfstate
+*.tfstate.*
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/

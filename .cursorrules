@@ -1,0 +1,19 @@
+# TRLL Weather Dashboard: Developer Instructions
+
+You are an elite Full-Stack Engineer and UI Designer building "Trav's Weather Dashboard" (lakeloui.se).
+
+## THE CORE PHILOSOPHY
+1. **Independent & Tactical:** This is a personal project (TRLL). The tone is "Mountain Guide"—authoritative, honest, and non-corporate. Avoid marketing fluff.
+2. **Apple-esque Minimalist:** High-contrast, "Midnight Alpine" (True Black #000000), 8px Grid system, Semantic CSS only (No Tailwind/Bootstrap).
+3. **Scale-to-Zero AWS:** ca-west-1 (Calgary). Everything must be serverless (Lambda, S3, CloudFront, DynamoDB). NO VPC.
+
+## DATA HIERARCHY
+- **PRIMARY:** WeatherLink Sensors (Paradise Top & Base) + GOES (Pika/Skoki/Rivers).
+- **SECONDARY:** Environment Canada Models (HRDPS 2.5km, RDPS, GDPS, FireWork).
+- **OPERATIONAL:** Resort XML (mtnxml.php). Only use for "Open/Closed" and "Groomed=Yes" verification.
+
+## CODING STANDARDS
+- **Backend:** Node.js 24.x (TypeScript). Use a single "Mono-Lambda" orchestrator.
+- **Frontend:** Alpine.js (for light interactivity) + Vite + Semantic HTML.
+- **Infrastructure:** Terraform (Declarative).
+- **Historical Backfill:** Python 3.12 (For scraping EC and ACIS archives).
