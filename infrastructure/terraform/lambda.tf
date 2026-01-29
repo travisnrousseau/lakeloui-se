@@ -27,22 +27,62 @@ resource "aws_iam_role_policy_attachment" "orchestrator_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+resource "aws_iam_role_policy" "orchestrator_extra" {
+  name = "${var.project_name}-orchestrator-extra"
+  role = aws_iam_role.orchestrator.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "dynamodb:UpdateItem"
+        ]
+        Effect   = "Allow"
+        Resource = [
+          aws_dynamodb_table.live_log.arn,
+          aws_dynamodb_table.history_archive.arn
+        ]
+      },
+      {
+        Action = [
+          "s3:PutObject"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_s3_bucket.frontend.arn}/*"
+      },
+      {
+        Action   = "cloudfront:CreateInvalidation"
+        Effect   = "Allow"
+        Resource = aws_cloudfront_distribution.frontend.arn
+      }
+    ]
+  })
+}
+
 resource "aws_lambda_function" "orchestrator" {
   filename         = data.archive_file.orchestrator.output_path
   function_name    = "${var.project_name}-orchestrator"
   role             = aws_iam_role.orchestrator.arn
   handler          = "handler.handler"
   source_code_hash = data.archive_file.orchestrator.output_base64sha256
-  runtime          = "nodejs24.x"
-  timeout          = 300
+  runtime          = "nodejs22.x"
+  memory_size      = 2048 # was 1024; heavy model processing and JPEG2000
+  timeout          = 600  # 10 min; multiple models + vertical profiles + FireWork
 
   environment {
     variables = {
-      LIVE_LOG_TABLE   = aws_dynamodb_table.live_log.name
-      HISTORY_TABLE    = aws_dynamodb_table.history_archive.name
-      FRONTEND_BUCKET  = aws_s3_bucket.frontend.id
+      LIVE_LOG_TABLE              = aws_dynamodb_table.live_log.name
+      HISTORY_TABLE               = aws_dynamodb_table.history_archive.name
+      FRONTEND_BUCKET             = aws_s3_bucket.frontend.id
+      FRONTEND_DISTRIBUTION_ID    = aws_cloudfront_distribution.frontend.id
+      WEATHERLINK_API_KEY         = var.weatherlink_api_key
+      WEATHERLINK_API_SECRET      = var.weatherlink_api_secret
+      WEATHERLINK_STATION_ID      = var.weatherlink_station_id
+      WEATHERLINK_STATION_ID_BASE = var.weatherlink_station_id_base
     }
   }
 }
-
-# Additional IAM for DynamoDB + S3 will be added when orchestrator logic is implemented.

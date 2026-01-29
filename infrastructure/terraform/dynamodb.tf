@@ -1,4 +1,4 @@
-# DynamoDB On-Demand — ARCHITECTURE §1: Live_Log (15-min), History_Archive (50-year)
+# DynamoDB On-Demand — ARCHITECTURE §1: Live_Log (5-min snapshots), History_Archive (50-year)
 
 resource "aws_dynamodb_table" "live_log" {
   name         = "${var.project_name}-Live_Log"

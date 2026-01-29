@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in. Do not commit terraform.tfvars.
+# WeatherLink API v2 — Paradise Top + Base (Operations). Get key/secret from WeatherLink.com; station IDs from your stations' API section.
+
+weatherlink_api_key            = ""
+weatherlink_api_secret        = ""
+weatherlink_station_id        = "23431"   # Paradise Top (Skilouise Paradise Top)
+weatherlink_station_id_base   = "23428"   # Base (Skilouise Operations)

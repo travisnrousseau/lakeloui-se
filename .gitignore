@@ -8,6 +8,8 @@ infrastructure/terraform/build/
 .env
 .env.local
 .env.*.local
+terraform.tfvars
+*.auto.tfvars
 *.log
 .DS_Store
 __pycache__/

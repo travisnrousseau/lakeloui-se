@@ -1,19 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>lakeloui.se — Trav's Weather Dashboard</title>
-  <link rel="stylesheet" href="/src/main.css" />
-  <script type="module" src="/src/main.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LAKELOUI.SE | Trav's Weather Dashboard</title>
+    <link rel="stylesheet" href="src/main.css">
+    <script defer src="src/main.js"></script>
 </head>
 <body>
-  <main id="app" x-data="{ loaded: false }">
-    <header>
-      <h1>lakeloui.se</h1>
-      <p>Where & Why — Lake Louise</p>
-    </header>
-    <section aria-label="Report">Pre-rendered by Mono-Lambda; Alpine for interactivity.</section>
-  </main>
+    <div class="dashboard">
+        <header>
+            <div class="logo">LAKELOUI.SE</div>
+            <div class="text-muted">[TRAV'S DASHBOARD]</div>
+            <div class="text-muted">AVALANCHE: <span id="ava-dot">●</span> | <span id="time">09:00</span></div>
+        </header>
+
+        <section class="card hero">
+            <p class="text-beans" id="hero-beans">
+                Fetching tactical advice from the summit...
+            </p>
+        </section>
+
+        <section class="card card-summit">
+            <div class="text-muted">SUMMIT (PARADISE)</div>
+            <div class="text-big" id="summit-temp">--°</div>
+            <div class="text-beans" id="summit-wind">-- KM/H NW</div>
+            <div class="sparkline">
+                <svg viewBox="0 0 100 40" preserveAspectRatio="none">
+                    <path d="M0 20 Q 25 10, 50 25 T 100 20" />
+                </svg>
+            </div>
+        </section>
+
+        <section class="card card-base">
+            <div class="text-muted">BASE AREA</div>
+            <div class="text-big" id="base-temp">--°</div>
+            <div class="text-beans" id="base-wind">-- KM/H SW</div>
+            <div class="sparkline">
+                <svg viewBox="0 0 100 40" preserveAspectRatio="none">
+                    <path d="M0 30 Q 25 35, 50 15 T 100 25" />
+                </svg>
+            </div>
+        </section>
+
+        <section class="card card-intelligence">
+            <div class="text-muted">STASH FINDER</div>
+            <div class="text-beans" id="stash-name">THE HORSESHOE</div>
+            <p id="stash-why">NW flow is loading the gullies. High quality transport expected.</p>
+        </section>
+
+        <section class="card card-intelligence">
+            <div class="text-muted">SNOW PHONE</div>
+            <div class="audio-player" x-data="{ playing: false }">
+                <button class="play-button" @click="playing = !playing">
+                    <span x-show="!playing">▶</span>
+                    <span x-show="playing">■</span>
+                </button>
+                <div class="text-muted">LATEST REPORT</div>
+            </div>
+        </section>
+
+        <footer>
+            <div class="footer-links">
+                <a href="https://avalanche.ca" target="_blank">AVALANCHE.CA</a>
+                <a href="https://skilouise.com" target="_blank">SKILOUISE.COM</a>
+                <a href="https://511.alberta.ca" target="_blank">ROADS</a>
+            </div>
+            <div class="trll-logo">
+                <a href="/admin" style="color: inherit; text-decoration: none;">TRLL</a>
+            </div>
+        </footer>
+    </div>
 </body>
 </html>

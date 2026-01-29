@@ -21,3 +21,30 @@ variable "environment" {
   type        = string
   default     = "development"
 }
+
+# WeatherLink API v2 — Paradise Top + Base (Operations). Set in terraform.tfvars or TF_VAR_* (do not commit secrets).
+variable "weatherlink_api_key" {
+  description = "WeatherLink API Key v2"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "weatherlink_api_secret" {
+  description = "WeatherLink API Secret v2"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "weatherlink_station_id" {
+  description = "WeatherLink station ID for Paradise Top (from dashboard)"
+  type        = string
+  default     = "23431"
+}
+
+variable "weatherlink_station_id_base" {
+  description = "WeatherLink station ID for Base (Operations); optional"
+  type        = string
+  default     = "23428"
+}

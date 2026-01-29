@@ -1,0 +1,199 @@
+diff --git a/node_modules/vgrib2/dist/vgrib2.cjs.development.js b/node_modules/vgrib2/dist/vgrib2.cjs.development.js
+index 496c3c7..b2f72fc 100644
+--- a/node_modules/vgrib2/dist/vgrib2.cjs.development.js
++++ b/node_modules/vgrib2/dist/vgrib2.cjs.development.js
+@@ -1606,7 +1606,8 @@ var getTemplate3 = function getTemplate3(template) {
+   switch (template) {
+     case 0:
+       return template30;
+-
++    case 1:
++      return template31;
+     default:
+       throw new Error("Template 3." + template + " not defined");
+   }
+@@ -1621,7 +1622,8 @@ var lookupTemplate3 = function lookupTemplate3(template) {
+   switch (template) {
+     case 0:
+       return lookupTemplate30;
+-
++    case 1:
++      return lookupTemplate31;
+     default:
+       throw new Error("Template 3." + template + " lookup table not defined");
+   }
+@@ -1690,6 +1690,23 @@ var lookupTemplate30 = function lookupTemplate30(templateValues) {
+   });
+ };
+ 
++/** Grid Definition Template 3.1 - Rotated Latitude/Longitude */
++var template31 = function template31(section) {
++  var basicAngle = section.readUInt32BE(38);
++  var subdivisions = section.readUInt32BE(42);
++  var ratio = basicAngle === 0 ? 1e-6 : basicAngle / subdivisions;
++  var r = template30(section);
++  r.LaD = section.readInt32BE(72) * ratio;
++  r.LoV = section.readInt32BE(76) * ratio;
++  return r;
++};
++
++var lookupTemplate31 = function lookupTemplate31(templateValues) {
++  return _extends({}, templateValues, {
++    shape: lookupTable32(templateValues.shape)
++  });
++};
++
+ /**
+  *  Grid Definition Section
+  *
+@@ -4318,7 +4337,8 @@ var getTemplate5 = function getTemplate5(template) {
+   switch (template) {
+     case 0:
+       return template50;
+-
++    case 40:
++      return template540;
+     default:
+       throw new Error("Template 5." + template + " not defined");
+   }
+@@ -4333,7 +4353,8 @@ var lookupTemplate5 = function lookupTemplate5(template) {
+   switch (template) {
+     case 0:
+       return lookupTemplate50;
+-
++    case 40:
++      return lookupTemplate540;
+     default:
+       throw new Error("Template 5." + template + " lookup table not defined");
+   }
+ };
+@@ -4392,3 +4412,30 @@ var lookupTemplate50 = function lookupTemplate50(templateValues) {
+   });
+ };
+ 
++/** Data Representation Template 5.40 - JPEG 2000 Code Stream */
++var template540 = function template540(section) {
++  return {
++    referenceValue: section.readFloatBE(11),
++    binaryScaleFactor: section.readInt16BE(15),
++    decimalScaleFactor: section.readInt16BE(17),
++    numberOfBits: section.readUInt8(19),
++    originalType: section.readUInt8(20),
++    typeOfCompressionUsed: section.readUInt8(21),
++    targetCompressionRatio: section.readUInt8(22)
++  };
++};
++
++var lookupTemplate540 = function lookupTemplate540(templateValues) {
++  return _extends({}, templateValues, {
++    originalType: lookupTable51(templateValues.originalType)
++  });
++};
++
+ /**
+  *  Data Representation Section
+  *
+@@ -4486,6 +4517,8 @@ var convertData = function convertData(drs, data) {
+   switch (dataRepresentationTemplate) {
+     case 0:
+       return simpleUnpacking(drs, data);
++    case 40:
++      return data;
+ 
+     default:
+       throw new Error("Template 7." + dataRepresentationTemplate + " not defined");
+diff --git a/node_modules/vgrib2/src/data/index.ts b/node_modules/vgrib2/src/data/index.ts
+index 1badd99..69f551c 100644
+--- a/node_modules/vgrib2/src/data/index.ts
++++ b/node_modules/vgrib2/src/data/index.ts
+@@ -16,6 +16,9 @@ export const convertData = (drs: DataRepresentationSectionValues, data: Buffer)
+   switch (dataRepresentationTemplate) {
+     case 0:
+       return simpleUnpacking(drs, data)
++    case 40:
++      // JPEG 2000: return raw buffer; caller must decode async and apply scale factors
++      return data as unknown as number[]
+ 
+     default:
+       throw new Error(`Template 7.${dataRepresentationTemplate} not defined`)
+diff --git a/node_modules/vgrib2/src/templates/template-3.ts b/node_modules/vgrib2/src/templates/template-3.ts
+index 01db02b..8d112ec 100644
+--- a/node_modules/vgrib2/src/templates/template-3.ts
++++ b/node_modules/vgrib2/src/templates/template-3.ts
+@@ -11,6 +11,8 @@ export const getTemplate3 = (template: number) => {
+   switch (template) {
+     case 0:
+       return template30
++    case 1:
++      return template31
+     default:
+       throw new Error(`Template 3.${template} not defined`)
+   }
+@@ -81,3 +83,25 @@ const lookupTemplate30 = (templateValues: ReturnType<typeof template30>) => {
+     shape: lookupTable32(templateValues.shape)
+   }
+ }
++
++/**
++ * Grid Definition Template 3.1 - Rotated Latitude/Longitude
++ * Same as 3.0 (octets 15-72) plus: LaD (73-76), LoV (77-80), angle (81-84).
++ * [Read more...](https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp3-1.shtml)
++ */
++const template31 = (section: Buffer) => {
++  const base = template30(section)
++  const basicAngle = section.readUInt32BE(38)
++  const subdivisions = section.readUInt32BE(42)
++  const ratio = basicAngle === 0 ? 1e-6 : basicAngle / subdivisions
++  const LaD = section.readInt32BE(72) * ratio
++  const LoV = section.readInt32BE(76) * ratio
++  return { ...base, LaD, LoV, gridUnits: 'degrees' as const }
++}
++
++const lookupTemplate31 = (templateValues: ReturnType<typeof template31>) => {
++  return {
++    ...templateValues,
++    shape: lookupTable32(templateValues.shape)
++  }
++}
+diff --git a/node_modules/vgrib2/src/templates/template-5.ts b/node_modules/vgrib2/src/templates/template-5.ts
+index ca990fc..b647b6b 100644
+--- a/node_modules/vgrib2/src/templates/template-5.ts
++++ b/node_modules/vgrib2/src/templates/template-5.ts
+@@ -11,6 +11,8 @@ export const getTemplate5 = (template: number) => {
+   switch (template) {
+     case 0:
+       return template50
++    case 40:
++      return template540
+     default:
+       throw new Error(`Template 5.${template} not defined`)
+   }
+@@ -58,3 +60,28 @@ const lookupTemplate50 = (templateValues: ReturnType<typeof template50>) => {
+     originalType: lookupTable51(templateValues.originalType)
+   }
+ }
++
++/**
++ * Data Representation Template 5.40 - JPEG 2000 Code Stream
++ * Octets 12-15 R, 16-17 E, 18-19 D, 20 bitsPerValue, 21 typeOfOriginalFieldValues,
++ * 22 typeOfCompressionUsed, 23 targetCompressionRatio.
++ * [ECMWF](https://codes.ecmwf.int/grib/format/grib2/templates/5/40/)
++ */
++const template540 = (section: Buffer) => {
++  return {
++    referenceValue: section.readFloatBE(11),
++    binaryScaleFactor: section.readInt16BE(15),
++    decimalScaleFactor: section.readInt16BE(17),
++    numberOfBits: section.readUInt8(19),
++    originalType: section.readUInt8(20),
++    typeOfCompressionUsed: section.readUInt8(21),
++    targetCompressionRatio: section.readUInt8(22)
++  }
++}
++
++const lookupTemplate540 = (templateValues: ReturnType<typeof template540>) => {
++  return {
++    ...templateValues,
++    originalType: lookupTable51(templateValues.originalType)
++  }
++}

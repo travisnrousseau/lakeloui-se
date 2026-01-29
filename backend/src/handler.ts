@@ -1,16 +1,388 @@
-/**
- * Mono-Lambda orchestrator — EventBridge every 15 minutes.
- * See docs/ARCHITECTURE.md §2 and docs/CONTENT_LOGIC.md.
- */
-import type { ScheduledHandler } from "aws-lambda";
+import { createHash } from "crypto";
+import type { ScheduledHandler, ScheduledEvent, Context } from "aws-lambda";
+import { fetchResortXml, getPikaSnowReport } from "./resortXml.js";
+import { fetchAllWaterStations } from "./waterOffice.js";
+import { fetchAllMscData, fetchForecastTimeline, fetchDetailedForecast } from "./mscModels.js";
+import { fetchAllWeatherLinkStations, normalizeStationVitals } from "./weatherLink.js";
+import { fetchTownsite } from "./townsite.js";
+import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-cloudfront";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { renderHtml, type RenderData } from "./renderHtml.js";
 
-export const handler: ScheduledHandler = async (_event, _context) => {
-  // 1. Fetch WeatherLink Pro API v2 (Paradise/Base)
-  // 2. Fetch WaterOffice GOES (Pika/Skoki/Rivers)
-  // 3. If 03:00–15:00 MST: Resort XML, MD5 check, skip AI if unchanged
-  // 4. Validate Groomed & Open for terrain recommendations
-  // 5. Clip HRDPS 2.5km GRIB2 for inversion analysis
-  // 6. Gemini 3 Flash script (Winter only)
-  // 7. Pre-render index.html, push to S3
-  return {};
+const ddbClient = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(ddbClient);
+const s3Client = new S3Client({});
+const cloudfrontClient = new CloudFrontClient({});
+
+const LIVE_LOG_TABLE = process.env.LIVE_LOG_TABLE!;
+const FRONTEND_BUCKET = process.env.FRONTEND_BUCKET!;
+const FRONTEND_DISTRIBUTION_ID = process.env.FRONTEND_DISTRIBUTION_ID;
+
+/** Recursively remove NaN, undefined, and Error instances so DynamoDB gets clean values. */
+function sanitizeForDynamo(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  if (typeof value === "number" && Number.isNaN(value)) return null;
+  if (value instanceof Error) return { message: value.message, name: value.name };
+  if (Array.isArray(value)) return value.map(sanitizeForDynamo).filter((v) => v !== undefined);
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      const cleaned = sanitizeForDynamo(v);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Publish HTML to S3 only when content changed (hash in DDB). Then invalidate CloudFront so edge serves fresh page.
+ */
+async function publishHtml(html: string): Promise<void> {
+  if (!FRONTEND_BUCKET) return;
+  const htmlHash = createHash("sha256").update(html).digest("hex");
+
+  const lastHashResult = await docClient.send(new GetCommand({
+    TableName: LIVE_LOG_TABLE,
+    Key: { pk: "FRONTEND_META", sk: "INDEX_HASH" }
+  }));
+  if (lastHashResult.Item?.htmlHash === htmlHash) {
+    console.log("Index unchanged (hash match). Skipping S3 PUT and CloudFront invalidation.");
+    return;
+  }
+
+  await s3Client.send(new PutObjectCommand({
+    Bucket: FRONTEND_BUCKET,
+    Key: "index.html",
+    Body: html,
+    ContentType: "text/html; charset=utf-8"
+  }));
+  console.log("Pushed pre-rendered index.html to S3.");
+
+  if (FRONTEND_DISTRIBUTION_ID) {
+    await cloudfrontClient.send(new CreateInvalidationCommand({
+      DistributionId: FRONTEND_DISTRIBUTION_ID,
+      InvalidationBatch: {
+        CallerReference: `lakeloui-${Date.now()}`,
+        Paths: { Quantity: 2, Items: ["/index.html", "/"] }
+      }
+    }));
+    console.log("CloudFront invalidation created for /index.html and /.");
+  }
+
+  await docClient.send(new PutCommand({
+    TableName: LIVE_LOG_TABLE,
+    Item: {
+      pk: "FRONTEND_META",
+      sk: "INDEX_HASH",
+      htmlHash,
+      updatedAt: new Date().toISOString()
+    }
+  }));
+}
+
+export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context: Context) => {
+  try {
+    // 1. Fetch WeatherLink Pro API v2 (Paradise/Base) - The "Truth" Sensors (non-blocking: continue on failure)
+    let weatherLinkData: Awaited<ReturnType<typeof fetchAllWeatherLinkStations>> = [null, null];
+    try {
+      weatherLinkData = await fetchAllWeatherLinkStations();
+      const fetchedCount = weatherLinkData.filter((s) => s != null).length;
+      console.log(`Fetched ${fetchedCount} WeatherLink station(s) (Paradise + Base).`);
+    } catch (err) {
+      console.error("WeatherLink fetch failed, continuing with empty weather:", err);
+    }
+
+    // 2. Fetch Townsite (EC 3053759) for valley-floor temp/bar; backup when WeatherLink missing (non-blocking)
+    let townsiteData: Awaited<ReturnType<typeof fetchTownsite>> = null;
+    try {
+      townsiteData = await fetchTownsite();
+      if (townsiteData) console.log("Townsite (valley-floor) data fetched:", townsiteData.stationName);
+    } catch (err) {
+      console.error("Townsite fetch failed:", err);
+    }
+
+    // 3. Fetch WaterOffice GOES (Pika/Skoki/Rivers) (non-blocking)
+    let waterData: Awaited<ReturnType<typeof fetchAllWaterStations>> = [];
+    try {
+      waterData = await fetchAllWaterStations();
+      console.log(`Fetched ${waterData.length} water data points.`);
+    } catch (err) {
+      console.error("WaterOffice fetch failed:", err);
+    }
+
+    // 4. Fetch MSC Consensus Models (HRDPS, RDPS, GDPS, FireWork) (non-blocking)
+    let mscData: Awaited<ReturnType<typeof fetchAllMscData>> = {};
+    try {
+      mscData = await fetchAllMscData();
+      if (mscData.hrdps) console.log("Fetched HRDPS Data.");
+    } catch (err) {
+      console.error("MSC fetch failed:", err);
+    }
+
+    // 4b. Consensus forecast timeline (HRDPS → RDPS → GDPS) for Lake Louise
+    let forecastTimeline: Awaited<ReturnType<typeof fetchForecastTimeline>> = [];
+    let detailedForecast: Awaited<ReturnType<typeof fetchDetailedForecast>> | null = null;
+    try {
+      console.log("Fetching forecast timeline (HRDPS/RDPS/GDPS)...");
+      [forecastTimeline, detailedForecast] = await Promise.all([
+        fetchForecastTimeline(),
+        fetchDetailedForecast()
+      ]);
+      console.log(`Forecast timeline: ${forecastTimeline.length} periods`);
+      if (forecastTimeline.length === 0) console.warn("Forecast empty — check first-failure log above for idx/URL.");
+    } catch (err) {
+      console.error("Forecast timeline fetch failed:", err);
+    }
+
+    // 5. Mountain Ops - Resort XML (3 AM - 3 PM MST). Non-blocking; use last snow report from DDB if fetch fails.
+    const now = new Date();
+    const utcHour = now.getUTCHours();
+    const isOperationalWindow = utcHour >= 10 && utcHour < 22;
+
+    let resortData: Awaited<ReturnType<typeof fetchResortXml>> | null = null;
+    let shouldProcessAI = false;
+
+    if (isOperationalWindow) {
+      try {
+        resortData = await fetchResortXml();
+        console.log("Fetched Resort XML:", resortData.report.name, "updated at", resortData.report.updated);
+
+        await docClient.send(new PutCommand({
+          TableName: LIVE_LOG_TABLE,
+          Item: sanitizeForDynamo({
+            pk: "RESORT_DATA",
+            sk: "LATEST",
+            xmlHash: resortData.xmlHash,
+            updatedAt: now.toISOString(),
+            report: resortData.report as Record<string, unknown>
+          }) as Record<string, unknown>
+        }));
+
+        const lastHashResult = await docClient.send(new GetCommand({
+          TableName: LIVE_LOG_TABLE,
+          Key: { pk: "RESORT_XML_META", sk: "LATEST" }
+        }));
+        const lastHash = lastHashResult.Item?.xmlHash;
+        const isXmlChanged = lastHash !== resortData.xmlHash;
+
+        if (!isXmlChanged) {
+          console.log("Resort XML unchanged (MD5 match). Skipping AI processing.");
+        } else {
+          console.log("Resort XML changed. Proceeding with AI processing.");
+          shouldProcessAI = true;
+          await docClient.send(new PutCommand({
+            TableName: LIVE_LOG_TABLE,
+            Item: sanitizeForDynamo({
+              pk: "RESORT_XML_META",
+              sk: "LATEST",
+              xmlHash: resortData.xmlHash,
+              updatedAt: now.toISOString()
+            }) as Record<string, unknown>
+          }));
+        }
+      } catch (err) {
+        console.error("Resort XML fetch failed, using last snow report if any:", err);
+      }
+    } else {
+      console.log(`Outside operational window (${utcHour} UTC). Skipping Resort XML and AI.`);
+    }
+
+    // Snow report: use fresh Pika from resort XML when in window; otherwise last persisted report
+    let pikaSnowReport: Awaited<ReturnType<typeof getPikaSnowReport>> = resortData ? getPikaSnowReport(resortData) : null;
+    let snowReportUpdatedAt: string | undefined;
+
+    if (pikaSnowReport) {
+      snowReportUpdatedAt = now.toISOString();
+      await docClient.send(new PutCommand({
+        TableName: LIVE_LOG_TABLE,
+        Item: sanitizeForDynamo({
+          pk: "LAST_SNOW_REPORT",
+          sk: "PIKA",
+          ...pikaSnowReport,
+          updatedAt: snowReportUpdatedAt
+        }) as Record<string, unknown>
+      }));
+    } else {
+      const lastSnow = await docClient.send(new GetCommand({
+        TableName: LIVE_LOG_TABLE,
+        Key: { pk: "LAST_SNOW_REPORT", sk: "PIKA" }
+      }));
+      if (lastSnow.Item && typeof lastSnow.Item.updatedAt === "string") {
+        pikaSnowReport = {
+          name: String(lastSnow.Item.name ?? "Pika"),
+          base: Number(lastSnow.Item.base ?? 0),
+          snowOverNight: Number(lastSnow.Item.snowOverNight ?? 0),
+          snow24Hours: Number(lastSnow.Item.snow24Hours ?? 0),
+          snow48Hours: Number(lastSnow.Item.snow48Hours ?? 0),
+          snow7Days: Number(lastSnow.Item.snow7Days ?? 0),
+          snowYearToDate: Number(lastSnow.Item.snowYearToDate ?? 0),
+          temperature: Number(lastSnow.Item.temperature ?? 0),
+          weatherConditions: String(lastSnow.Item.weatherConditions ?? ""),
+          primarySurface: String(lastSnow.Item.primarySurface ?? ""),
+          secondarySurface: String(lastSnow.Item.secondarySurface ?? ""),
+          lastSnowfallDate: lastSnow.Item.lastSnowfallDate as string | undefined,
+          lastSnowfallUpdate: lastSnow.Item.lastSnowfallUpdate as string | undefined
+        };
+        snowReportUpdatedAt = lastSnow.Item.updatedAt as string;
+      }
+    }
+
+    const heavySnow = pikaSnowReport != null && pikaSnowReport.snow24Hours >= 15;
+
+    const basePoint = mscData.hrdps && "BASE" in mscData.hrdps ? (mscData.hrdps as any).BASE : null;
+    // weatherLinkData is [Paradise, Base] (null for missing). Preserve order for render: index 0 = summit, 1 = base.
+    let weatherForRender = await Promise.all(weatherLinkData.map(async (s, idx) => {
+      if (!s) return {};
+      const v = normalizeStationVitals(s);
+      
+      const pk = `STATION_WIND_DIR_${idx}`;
+      const sk = "LATEST";
+      
+      let finalDir = v.wind_direction_deg;
+      
+      if (finalDir != null) {
+        // Persist the new direction
+        await docClient.send(new PutCommand({
+          TableName: LIVE_LOG_TABLE,
+          Item: {
+            pk,
+            sk,
+            deg: finalDir,
+            updatedAt: now.toISOString()
+          }
+        }));
+      } else {
+        // Try to fetch the last known direction from DynamoDB
+        try {
+          const lastDirResult = await docClient.send(new GetCommand({
+            TableName: LIVE_LOG_TABLE,
+            Key: { pk, sk }
+          }));
+          if (lastDirResult.Item?.deg != null) {
+            finalDir = Number(lastDirResult.Item.deg);
+          }
+        } catch (err) {
+          console.error(`Error fetching last wind direction for station ${idx}:`, err);
+        }
+      }
+
+      return {
+        temp: v.temp ?? undefined,
+        wind_speed: v.wind_speed ?? undefined,
+        wind_direction_deg: finalDir ?? undefined,
+        feels_like: v.feels_like ?? undefined,
+        bar_sea_level: v.bar_sea_level ?? undefined,
+        data_ts: s.ts ?? undefined
+      };
+    }));
+    const summitTempVal = weatherForRender[0]?.temp;
+    const baseTempVal = weatherForRender[1]?.temp;
+    const summitWindVal = weatherForRender[0]?.wind_speed;
+    const baseWindVal = weatherForRender[1]?.wind_speed;
+    const summitDir = weatherForRender[0]?.wind_direction_deg;
+    const baseDir = weatherForRender[1]?.wind_direction_deg;
+    if (summitTempVal != null || baseTempVal != null || summitWindVal != null || baseWindVal != null) {
+      console.log(
+        `WeatherLink vitals: Summit temp=${summitTempVal ?? "—"} wind=${summitWindVal ?? "—"} km/h dir=${summitDir != null ? summitDir + "°" : "—"} | Base temp=${baseTempVal ?? "—"} wind=${baseWindVal ?? "—"} km/h dir=${baseDir != null ? baseDir + "°" : "—"}`
+      );
+    }
+    // Townsite: kept in code only; do not use for display or as fallback (DATA_SOURCES.md).
+    // Inversion: 850 vs 700 mb temp (HRDPS) and/or high surface pressure (WeatherLink bar in hPa)
+    const barHigh = weatherForRender.some((w) => w.bar_sea_level != null && w.bar_sea_level > 1018);
+    const inversionFromAloft = Boolean(
+      basePoint && basePoint.temp700 != null && basePoint.temp850 != null && basePoint.temp700 > basePoint.temp850
+    );
+    const inversionActive = inversionFromAloft || barHigh;
+
+    // Current hero/stash text (AI-generated when shouldProcessAI, else fallback)
+    const aiScript = shouldProcessAI
+      ? "NW winds are loading the Horseshoe. Go deep in the A-I Gullies. It's an inversion day—stay high for the heat."
+      : "Conditions as last report. Next update when resort data changes.";
+    const stashName = "THE HORSESHOE";
+    const stashWhy = shouldProcessAI
+      ? "NW flow loading the gullies. High quality transport expected."
+      : "Check wind and aspect for the stash.";
+
+    const renderData: RenderData = {
+      weather: weatherForRender,
+      msc: mscData,
+      forecastTimeline,
+      detailedForecast: detailedForecast ?? undefined,
+      aiScript,
+      stashName,
+      stashWhy,
+      inversionActive,
+      heavySnow,
+      snowReport: pikaSnowReport ?? undefined,
+      snowReportUpdatedAt
+    };
+    await publishHtml(renderHtml(renderData));
+
+    // Explicit tracking when wind direction is not provided (vs. missing data). Persist for auditing.
+    const weatherSummary = {
+      summit: {
+        wind_direction_provided: summitDir != null,
+        data_ts: weatherLinkData[0]?.ts ?? null
+      },
+      base: {
+        wind_direction_provided: baseDir != null,
+        data_ts: weatherLinkData[1]?.ts ?? null
+      }
+    };
+
+    // Store everything for future use (omit NaN/error). Full snapshot every run.
+    const logItem = sanitizeForDynamo({
+      pk: "LIVE_SNAPSHOT",
+      sk: now.toISOString(),
+      weather: weatherLinkData,
+      weatherSummary,
+      townsite: townsiteData ?? null,
+      water: waterData,
+      msc: mscData,
+      forecastTimeline,
+      detailedForecast,
+      resort: resortData ? resortData.report : null,
+      resortLocations: resortData ? resortData.report.currentConditions?.resortLocations : null,
+      resortXmlHash: resortData?.xmlHash ?? null,
+      aiScript,
+      stashName,
+      stashWhy,
+      inversionActive,
+      heavySnow,
+      snowReport: pikaSnowReport ?? null,
+      snowReportUpdatedAt: snowReportUpdatedAt ?? null,
+      ttl: Math.floor(Date.now() / 1000) + (60 * 60 * 24 * 7) // 7 day TTL
+    }) as Record<string, unknown>;
+
+    await docClient.send(new PutCommand({
+      TableName: LIVE_LOG_TABLE,
+      Item: logItem
+    }));
+
+    // When AI ran, append to AI report history for future use
+    if (shouldProcessAI) {
+      const aiReportItem = sanitizeForDynamo({
+        pk: "AI_REPORT",
+        sk: now.toISOString(),
+        aiScript,
+        stashName,
+        stashWhy,
+        resortXmlHash: resortData?.xmlHash ?? null,
+        inversionActive,
+        heavySnow,
+        ttl: Math.floor(Date.now() / 1000) + (60 * 60 * 24 * 365) // 1 year TTL for AI history
+      }) as Record<string, unknown>;
+      await docClient.send(new PutCommand({
+        TableName: LIVE_LOG_TABLE,
+        Item: aiReportItem
+      }));
+    }
+
+  } catch (error) {
+    console.error("Error in orchestrator:", error);
+  }
 };

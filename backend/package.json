@@ -3,14 +3,28 @@
   "version": "0.1.0",
   "description": "Mono-Lambda orchestrator for lakeloui.se — EventBridge every 15 min",
   "type": "module",
-  "engines": { "node": ">=24" },
-  "scripts": {
-    "build": "tsc",
-    "invoke": "node dist/handler.js"
+  "engines": {
+    "node": ">=24"
   },
-  "dependencies": {},
+  "scripts": {
+    "build": "tsc && npm prune --omit=dev && cp -r node_modules dist/",
+    "invoke": "node dist/handler.js",
+    "postinstall": "node scripts/normalize-vgrib2.mjs && patch -p1 -s -N < patches/vgrib2+0.1.13.patch"
+  },
+  "dependencies": {
+    "@abasb75/jpeg2000-decoder": "^2.5.4-f",
+    "@aws-sdk/client-cloudfront": "^3.975.0",
+    "@aws-sdk/client-dynamodb": "^3.975.0",
+    "@aws-sdk/client-s3": "^3.975.0",
+    "@aws-sdk/lib-dynamodb": "^3.975.0",
+    "axios": "^1.13.4",
+    "fast-xml-parser": "^5.3.3",
+    "vgrib2": "^0.1.13"
+  },
   "devDependencies": {
-    "@types/aws-lambda": "^3.0.0",
+    "@types/aws-lambda": "^8.10.147",
+    "@types/node": "^25.0.10",
+    "patch-package": "^8.0.1",
     "typescript": "^5.7.2"
   }
 }
