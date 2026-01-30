@@ -82,6 +82,56 @@ function formatWaterOfficeTime(ts: string): string {
   }
 }
 
+/** Edmonton (Alberta) offset in hours: MST = -7, MDT = -6. DST: 2nd Sun Mar – 1st Sun Nov. */
+function getEdmontonOffsetHours(year: number, month: number, day: number): number {
+  if (month < 3 || (month === 3 && day < 8)) return -7; // Jan, Feb, or Mar 1–7
+  if (month > 11 || (month === 11 && day > 7)) return -7; // Nov 8+, Dec
+  if (month > 3 && month < 11) return -6; // Apr–Oct
+  if (month === 3) {
+    const secondSunday = 8 + (14 - new Date(year, 2, 1).getDay()) % 7;
+    return day < secondSunday ? -7 : -6;
+  }
+  const firstSunday = 1 + (7 - new Date(year, 10, 1).getDay()) % 7;
+  return day < firstSunday ? -6 : -7;
+}
+
+/**
+ * Parse Pika/Skoki timestamp ("YYYY-MM-DD HH:mm:ss") as Mountain Time (America/Edmonton)
+ * and format as "HH:MM MST" or "DD Mon, HH:MM MST". Rivers.alberta.ca returns times in Alberta local time.
+ */
+function formatPikaSkokiTimeMST(ts: string): string {
+  try {
+    const trimmed = ts.trim();
+    const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})/);
+    if (!match) return formatWaterOfficeTime(trimmed);
+    const [, y, mo, d, h, mi, s] = match;
+    const year = parseInt(y!, 10);
+    const month = parseInt(mo!, 10);
+    const day = parseInt(d!, 10);
+    const hour = parseInt(h!, 10);
+    const min = parseInt(mi!, 10);
+    const sec = parseInt(s!, 10);
+    const offsetHours = getEdmontonOffsetHours(year, month, day);
+    const utcHour = hour - offsetHours;
+    const utcDate = new Date(Date.UTC(year, month - 1, day, utcHour, min, sec));
+    if (Number.isNaN(utcDate.getTime())) return trimmed;
+    const mst = new Date(utcDate.toLocaleString("en-US", { timeZone: "America/Edmonton" }));
+    const time = mst.toTimeString().slice(0, 5);
+    const today = new Date();
+    const todayMst = new Date(today.toLocaleString("en-US", { timeZone: "America/Edmonton" }));
+    const isToday =
+      mst.getDate() === todayMst.getDate() &&
+      mst.getMonth() === todayMst.getMonth() &&
+      mst.getFullYear() === todayMst.getFullYear();
+    const label = offsetHours === -7 ? "MST" : "MDT";
+    if (isToday) return `${time} ${label}`;
+    const dateStr = mst.toLocaleDateString("en-CA", { day: "numeric", month: "short" });
+    return `${dateStr}, ${time} ${label}`;
+  } catch {
+    return ts;
+  }
+}
+
 function windDirFromDeg(deg: number): string {
   const dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
   const i = Math.round(((deg % 360) / 360) * 16) % 16;
@@ -154,13 +204,25 @@ function upperSnowCm(
   return upperDepthCm(midCm, tMid_C, tUpper_C, ELEV_PIKA_M, ELEV_SUMMIT_M);
 }
 
-/** Build HTML block for precip periods: one line per period, "snow equiv." label. */
-function formatPrecipPeriodsSnowEquiv(p: { precip12hMm?: number; precip24hMm?: number; precip48hMm?: number; precip7dMm?: number }): string {
+/** Default temp °C for SLR when station temp missing (mid-mountain). */
+const DEFAULT_STATION_TEMP_C = -5;
+
+/** Build HTML block for precip periods: one line per period. API gives mm (liquid equiv.). When tempC provided, also shows cm snow (SLR). */
+function formatPrecipPeriodsSnowEquiv(
+  p: { precip12hMm?: number; precip24hMm?: number; precip48hMm?: number; precip7dMm?: number },
+  tempC?: number | null
+): string {
+  const t = tempC != null && Number.isFinite(tempC) ? tempC : DEFAULT_STATION_TEMP_C;
   const parts: string[] = [];
-  if (p.precip12hMm != null) parts.push(`12h ${p.precip12hMm} mm snow equiv.`);
-  if (p.precip24hMm != null) parts.push(`24h ${p.precip24hMm} mm snow equiv.`);
-  if (p.precip48hMm != null) parts.push(`48h ${p.precip48hMm} mm snow equiv.`);
-  if (p.precip7dMm != null) parts.push(`7d ${p.precip7dMm} mm snow equiv.`);
+  const add = (label: string, mm: number | null | undefined) => {
+    if (mm == null) return;
+    const cmSnow = Math.round(depthCmFromSwe(mm, t) * 10) / 10;
+    parts.push(`${label} ${mm} mm liquid equiv. (${cmSnow} cm snow)`);
+  };
+  add("12h", p.precip12hMm);
+  add("24h", p.precip24hMm);
+  add("48h", p.precip48hMm);
+  add("7d", p.precip7dMm);
   if (parts.length === 0) return "—";
   return `<div class="snow-equiv-periods">${parts.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>`;
 }
@@ -209,12 +271,12 @@ function renderGoesPikaSkokiCard(
     if (pika.tempC != null) pikaExtra.push(`${Math.round(pika.tempC)}°C`);
     if (pika.snowDepthCm != null) pikaExtra.push(`${pika.snowDepthCm} cm snow`);
     if (pika.windSpeedKmh != null) pikaExtra.push(`${Math.round(pika.windSpeedKmh)} km/h wind`);
-    const periodsHtml = formatPrecipPeriodsSnowEquiv(pika);
+    const periodsHtml = formatPrecipPeriodsSnowEquiv(pika, pika.tempC);
     const right = pikaExtra.length ? pikaExtra.join(" · ") : "";
     lines.push(
       `<div class="snow-row"><span class="snow-label">Pika Run (mid)</span><span class="snow-cm">${right || (periodsHtml === "—" ? "—" : "")}</span></div>`,
       periodsHtml !== "—" ? periodsHtml : "",
-      pika.timestamp ? `<p class="snow-updated" style="font-size:0.75rem;margin-top:6px;">${escapeHtml(formatWaterOfficeTime(pika.timestamp))}</p>` : ""
+      pika.timestamp ? `<p class="snow-updated" style="font-size:0.75rem;margin-top:6px;">${escapeHtml(formatPikaSkokiTimeMST(pika.timestamp))}</p>` : ""
     );
   } else {
     lines.push(
@@ -226,12 +288,12 @@ function renderGoesPikaSkokiCard(
     if (skoki.sweMm != null) skokiExtra.push(`SWE ${skoki.sweMm} mm`);
     if (skoki.snowDepthCm != null) skokiExtra.push(`${skoki.snowDepthCm} cm depth`);
     if (skoki.tempC != null) skokiExtra.push(`${Math.round(skoki.tempC)}°C`);
-    const periodsHtml = formatPrecipPeriodsSnowEquiv(skoki);
+    const periodsHtml = formatPrecipPeriodsSnowEquiv(skoki, skoki.tempC);
     const right = skokiExtra.length ? skokiExtra.join(" · ") : "";
     lines.push(
       `<div class="snow-row"><span class="snow-label">Skoki (pillow)</span><span class="snow-cm">${right || (periodsHtml === "—" ? "—" : "")}</span></div>`,
       periodsHtml !== "—" ? periodsHtml : "",
-      skoki.timestamp ? `<p class="snow-updated" style="font-size:0.75rem;margin-top:6px;">${escapeHtml(formatWaterOfficeTime(skoki.timestamp))}</p>` : ""
+      skoki.timestamp ? `<p class="snow-updated" style="font-size:0.75rem;margin-top:6px;">${escapeHtml(formatPikaSkokiTimeMST(skoki.timestamp))}</p>` : ""
     );
   } else {
     lines.push(
