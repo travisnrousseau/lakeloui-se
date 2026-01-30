@@ -144,12 +144,12 @@ For Flood Sentinel and Creek Crossing, link Skoki/Pika to **05BA001 (Bow at Lake
 | **Historical** | [Alberta Climate Information Service (ACIS)](https://acis.alberta.ca/) |
 | **Snow safety** | [Avalanche Canada — Mountain Weather Forecast](https://www.avalanche.ca/) |
 
-**JSON table endpoints (used by this app):** Alberta River Basins exposes table JSON for station/parameter. Precipitation (PC, mm, 15‑min):
+**JSON table endpoints (used by this app):** Alberta River Basins exposes table JSON for station/parameter. Precipitation (PC, mm, 15‑min). **Pika and Skoki stations update every 15 minutes on the quarter-hour** (:00, :15, :30, :45).
 
 - **Pika Run (mid):** `https://rivers.alberta.ca/apps/Basins/data/figures/river/abrivers/stationdata/M_PC_05BA815_table.json` — station 05BA815 "Pika Run - EPA".
 - **Skoki (pillow):** `https://rivers.alberta.ca/apps/Basins/data/figures/river/abrivers/stationdata/M_PC_05CA805_table.json` — station 05CA805 "Skoki Lodge - EPA".
 
-Response: array of one object with `station_name`, `data` (array of `[timestamp, value]`), `ts_unitsymbols` (e.g. `["mm"]`). We use the last row for latest precip.
+Response: array of one object with `station_name`, `data` (array of `[timestamp, value]`), `ts_unitsymbols` (e.g. `["mm"]`). Values are **precipitation in mm (liquid equivalent)** — i.e. depth of water / snow water equivalent (SWE), not snow depth. We use the last row for latest precip and sum rows for 12h/24h/48h/7d.
 
 #### MSC GeoMet (EC) — checked
 
@@ -182,7 +182,7 @@ We queried **api.weather.gc.ca** to see if Pika and Skoki are available for curr
 | **511 Alberta** | `GET https://511.alberta.ca/api/v2/get/weatherstations` | JSON/XML. Highway/road stations (temp, wind, humidity). Filter by lat/lon for Lake Louise. Rate limit ~10/min. May not include Pika/Skoki but useful for valley/road. |
 | **MSC GeoMet (EC)** | `climate-stations`, `climate-daily` | Skoki (3055976) and Lake Louise (3053760) are in the API; observations are **historical only** (see above). |
 
-**Implementation:** `backend/src/pikaSkoki.ts` fetches Pika (05BA815) and Skoki (05CA805) from the rivers.alberta.ca table JSON URLs above. The GOES card shows latest precipitation (mm) and timestamp for each; ~10 km apart.
+**Implementation:** `backend/src/pikaSkoki.ts` fetches Pika (05BA815) and Skoki (05CA805) from the rivers.alberta.ca table JSON URLs above. The GOES card shows latest precipitation (mm) and timestamp for each; ~10 km apart. Data updates every 15 minutes on the quarter-hour.
 
 ---
 

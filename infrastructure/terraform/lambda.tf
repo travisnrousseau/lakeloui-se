@@ -55,6 +55,13 @@ resource "aws_iam_role_policy" "orchestrator_extra" {
         Resource = "${aws_s3_bucket.frontend.arn}/*"
       },
       {
+        Action = [
+          "s3:PutObject"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_s3_bucket.archive.arn}/*"
+      },
+      {
         Action   = "cloudfront:CreateInvalidation"
         Effect   = "Allow"
         Resource = aws_cloudfront_distribution.frontend.arn
@@ -75,14 +82,17 @@ resource "aws_lambda_function" "orchestrator" {
 
   environment {
     variables = {
-      LIVE_LOG_TABLE              = aws_dynamodb_table.live_log.name
-      HISTORY_TABLE               = aws_dynamodb_table.history_archive.name
-      FRONTEND_BUCKET             = aws_s3_bucket.frontend.id
-      FRONTEND_DISTRIBUTION_ID    = aws_cloudfront_distribution.frontend.id
-      WEATHERLINK_API_KEY         = var.weatherlink_api_key
-      WEATHERLINK_API_SECRET      = var.weatherlink_api_secret
-      WEATHERLINK_STATION_ID      = var.weatherlink_station_id
-      WEATHERLINK_STATION_ID_BASE = var.weatherlink_station_id_base
+      NODE_ENV                     = "development" # use patched vgrib2 development build (template 5.40 / JPEG2000)
+      LIVE_LOG_TABLE               = aws_dynamodb_table.live_log.name
+      HISTORY_TABLE                = aws_dynamodb_table.history_archive.name
+      FRONTEND_BUCKET               = aws_s3_bucket.frontend.id
+      ARCHIVE_BUCKET                 = aws_s3_bucket.archive.id
+      FRONTEND_DISTRIBUTION_ID      = aws_cloudfront_distribution.frontend.id
+      GEOMET_ENABLED               = "1"           # fetch Canadian models (HRDPS/RDPS/GDPS) every run; save forecast to DynamoDB
+      WEATHERLINK_API_KEY          = var.weatherlink_api_key
+      WEATHERLINK_API_SECRET       = var.weatherlink_api_secret
+      WEATHERLINK_STATION_ID       = var.weatherlink_station_id
+      WEATHERLINK_STATION_ID_BASE  = var.weatherlink_station_id_base
     }
   }
 }

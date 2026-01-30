@@ -48,3 +48,16 @@ variable "weatherlink_station_id_base" {
   type        = string
   default     = "23428"
 }
+
+# Custom domain wx.lakeloui.se — Route 53 + ACM (see infrastructure/terraform/README.md)
+variable "domain_name" {
+  description = "Custom domain for the frontend (e.g. wx.lakeloui.se)"
+  type        = string
+  default     = "wx.lakeloui.se"
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 hosted zone ID for the parent domain (e.g. lakeloui.se). Required for DNS and ACM validation."
+  type        = string
+  default     = ""
+}

@@ -1,10 +1,12 @@
 # CloudFront origin for S3 frontend — ARCHITECTURE §1
+# When route53_zone_id is set, uses custom domain wx.lakeloui.se and ACM cert.
 
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
   comment             = "${var.project_name} frontend"
+  aliases             = var.route53_zone_id != "" ? [var.domain_name] : []
 
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
@@ -28,7 +30,10 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.route53_zone_id == ""
+    acm_certificate_arn            = var.route53_zone_id != "" ? aws_acm_certificate.frontend[0].arn : null
+    ssl_support_method             = var.route53_zone_id != "" ? "sni-only" : null
+    minimum_protocol_version      = var.route53_zone_id != "" ? "TLSv1.2_2021" : null
   }
 
   tags = {

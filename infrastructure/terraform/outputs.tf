@@ -3,6 +3,11 @@ output "frontend_bucket" {
   value       = aws_s3_bucket.frontend.id
 }
 
+output "archive_bucket" {
+  description = "S3 bucket for snapshot archive (180d → Glacier); for year-over-year comparison"
+  value       = aws_s3_bucket.archive.id
+}
+
 output "cloudfront_url" {
   description = "CloudFront distribution URL"
   value       = "https://${aws_cloudfront_distribution.frontend.domain_name}"
@@ -11,6 +16,11 @@ output "cloudfront_url" {
 output "cloudfront_domain" {
   description = "CloudFront domain name"
   value       = aws_cloudfront_distribution.frontend.domain_name
+}
+
+output "frontend_url" {
+  description = "Frontend URL (custom domain if route53_zone_id set, else CloudFront default)"
+  value       = var.route53_zone_id != "" ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.frontend.domain_name}"
 }
 
 output "live_log_table" {

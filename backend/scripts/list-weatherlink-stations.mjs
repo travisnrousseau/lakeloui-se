@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 /**
  * List WeatherLink v2 stations for your API key. Use this to find Paradise Top and Base (Operations) station_ids.
- * Run from backend/: node scripts/list-weatherlink-stations.mjs
+ * Run from repo root: backend/scripts/list-weatherlink-stations.mjs  OR  from backend/: node scripts/list-weatherlink-stations.mjs
  * Loads WEATHERLINK_API_KEY and WEATHERLINK_API_SECRET from env or from backend/.env (do not commit .env).
  */
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import https from "https";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Load backend/.env if present (KEY=value, no quotes, ignore blanks and comments)
 function loadEnv() {
-  const envPath = path.join(process.cwd(), ".env");
+  const envPath = path.join(__dirname, "..", ".env");
   try {
     const content = fs.readFileSync(envPath, "utf8");
     for (const line of content.split("\n")) {

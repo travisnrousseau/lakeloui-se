@@ -12,6 +12,9 @@ terraform.tfvars
 *.auto.tfvars
 *.log
 .DS_Store
+backend/bento-preview.html
+backend/fixtures/cached-forecast.json
+backend/fixtures/dry-run-cache.json
 __pycache__/
 *.py[cod]
 .venv/

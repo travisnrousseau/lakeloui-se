@@ -23,6 +23,7 @@ const cloudfrontClient = new CloudFrontClient({});
 
 const LIVE_LOG_TABLE = process.env.LIVE_LOG_TABLE!;
 const FRONTEND_BUCKET = process.env.FRONTEND_BUCKET!;
+const ARCHIVE_BUCKET = process.env.ARCHIVE_BUCKET ?? null;
 const FRONTEND_DISTRIBUTION_ID = process.env.FRONTEND_DISTRIBUTION_ID;
 
 /**
@@ -464,6 +465,25 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       TableName: LIVE_LOG_TABLE,
       Item: logItem
     }));
+
+    // Archive snapshot to S3 for long-term lookback (180d → Glacier; ARCHITECTURE §6)
+    if (ARCHIVE_BUCKET) {
+      const y = now.getUTCFullYear();
+      const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+      const d = String(now.getUTCDate()).padStart(2, "0");
+      const iso = now.toISOString().replace(/:/g, "-");
+      const archiveKey = `snapshots/${y}/${m}/${d}/snapshot-${iso}.json`;
+      try {
+        await s3Client.send(new PutObjectCommand({
+          Bucket: ARCHIVE_BUCKET,
+          Key: archiveKey,
+          Body: JSON.stringify(logItem, null, 0),
+          ContentType: "application/json"
+        }));
+      } catch (archiveErr) {
+        console.error("Archive S3 write failed:", archiveErr);
+      }
+    }
 
     if (geometHash != null) {
       await docClient.send(new PutCommand({

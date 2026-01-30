@@ -391,7 +391,7 @@ function renderVerticalHeatmap(profile: { level: number; temp: number }[]): stri
   return `<div class="vertical-heatmap">${segments.join("")}</div>`;
 }
 
-/** Render a compact SVG timeline (temp line + precip bars) for the bento. */
+/** Render a prominent SVG timeline (temp line colored warm/cold + precip bars) for the bento. No caption — caller puts "Precip bars" below. */
 function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPeriod[] | undefined): string {
   const leads = getLeadsFromData(hrdps, rdps);
   const getPeriod = (arr: ForecastPeriod[] | undefined, lead: number) => (arr || []).find(p => p.leadHours === lead) ?? null;
@@ -400,9 +400,9 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
   if (!hasAny) return "";
 
   const width = 720;
-  const height = 100;
-  const padding = 24;
-  const plotH = height - 2 * padding - 14;
+  const height = 180;
+  const padding = 32;
+  const plotH = height - 2 * padding - 24;
 
   const allTemps = (hrdps || []).concat(rdps || []).flatMap(p => [p.tempBase, p.tempSummit]).filter((t): t is number => t != null && Number.isFinite(t));
   const minT = allTemps.length ? Math.min(...allTemps) : -10;
@@ -413,9 +413,20 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
 
   const pts = hrdpsPts.map((p, i) => {
     const avg = p ? ((p.tempBase ?? (minT + maxT) / 2) + (p.tempSummit ?? (minT + maxT) / 2)) / 2 : (minT + maxT) / 2;
-    return { x: getX(i), y: getY(avg) };
+    return { x: getX(i), y: getY(avg), t: avg };
   });
-  const pathD = pts.length > 0 ? `M ${pts[0].x} ${pts[0].y}` + pts.slice(1).map(p => ` L ${p.x} ${p.y}`).join("") : "";
+
+  const strokeCold = "#00d4ff";
+  const strokeWarm = "#ff8c00";
+  const pathSegments: string[] = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i]!;
+    const b = pts[i + 1]!;
+    const midT = (a.t + b.t) / 2;
+    const stroke = midT <= 0 ? strokeCold : strokeWarm;
+    pathSegments.push(`<path d="M ${a.x} ${a.y} L ${b.x} ${b.y}" fill="none" stroke="${stroke}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>`);
+  }
+  const tempPaths = pathSegments.join("\n        ");
 
   const precipByLead: Record<number, number | null> = {};
   const isSnowByLead: Record<number, boolean> = {};
@@ -431,8 +442,8 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
   }
   const precipVals = Object.values(precipByLead).filter((v): v is number => v != null && Number.isFinite(v));
   const maxPrecip = precipVals.length ? Math.max(...precipVals) : 0;
-  const barH = 18;
-  const barW = Math.max(8, Math.min(20, (width - 2 * padding) / leads.length - 4));
+  const barH = 28;
+  const barW = Math.max(10, Math.min(28, (width - 2 * padding) / leads.length - 4));
   const barRects = leads.map((lead, i) => {
     const mm = precipByLead[lead];
     if (mm == null || mm <= 0) return "";
@@ -442,25 +453,25 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
     const snow = isSnowByLead[lead];
     const fill = snow ? "#6eb5ff" : "#64748b";
     const title = snow ? `${mm.toFixed(1)} mm → snow` : `${mm.toFixed(1)} mm rain`;
-    return `<rect class="precip-bar" x="${x}" y="${y}" width="${barW}" height="${h}" rx="2" fill="${fill}" title="${title}" />`;
+    return `<rect class="precip-bar" x="${x}" y="${y}" width="${barW}" height="${h}" rx="3" fill="${fill}" title="${title}" />`;
   }).join("");
 
+  const yZero = getY(0);
   const tickLabels = leads.map((lead, i) => {
     const x = getX(i);
     const short = labelForLeadHours(lead).split(" ")[0];
-    return `<text x="${x}" y="${height - 4}" text-anchor="middle" font-size="10" fill="var(--gray,#888)">${short}</text>`;
+    return `<text x="${x}" y="${height - 6}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--gray,#888)">${short}</text>`;
   }).join("");
 
   return `
-    <div class="forecast-viz" style="margin-bottom:12px;">
-      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-width:720px;height:100px;">
-        ${pathD ? `<path d="${pathD}" fill="none" stroke="#0a5366" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
-        <line x1="${padding}" y1="${getY(0)}" x2="${width - padding}" y2="${getY(0)}" stroke="#fff" stroke-width="1" stroke-dasharray="4 2" opacity="0.8"/>
-        <text x="${padding}" y="${getY(0) - 4}" font-size="10" fill="var(--gray,#888)">0°C</text>
+    <div class="forecast-viz" style="margin:var(--u2) 0;padding:var(--u2) 0;background:linear-gradient(to bottom, rgba(0,212,255,0.06) 0%, transparent 50%, rgba(255,140,0,0.06) 100%);border-radius:12px;border:1px solid rgba(255,255,255,0.08);">
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-width:720px;height:180px;display:block;">
+        <line x1="${padding}" y1="${yZero}" x2="${width - padding}" y2="${yZero}" stroke="#fff" stroke-width="2" stroke-dasharray="6 4" opacity="0.9"/>
+        <text x="${padding}" y="${yZero - 6}" font-size="12" font-weight="700" fill="#fff">0°C</text>
+        ${tempPaths}
         ${barRects}
         ${tickLabels}
       </svg>
-      <p style="margin-top:4px;font-size:0.75rem;color:var(--gray);">Precip bars: <span style="color:#6eb5ff;">blue = snow</span>, <span style="color:#64748b;">slate = rain</span></p>
     </div>`;
 }
 
@@ -553,9 +564,15 @@ function renderForecastBento(
       ? getPeriod(precipFallback, lead)
       : p;
     const precipStr = precipDisplay(precipMm, (precipTemp?.tempBase != null && precipTemp?.tempSummit != null) ? (precipTemp.tempBase + precipTemp.tempSummit) / 2 : meanTemp, precipTemp?.tempBase ?? p.tempBase ?? null);
+    const windSpeed = (p.windSpeed != null && Number.isFinite(p.windSpeed))
+      ? p.windSpeed
+      : (precipFallback ? getPeriod(precipFallback, lead)?.windSpeed : null) ?? null;
+    const windDir = (p.windDir != null && Number.isFinite(p.windDir))
+      ? p.windDir
+      : (precipFallback ? getPeriod(precipFallback, lead)?.windDir : null) ?? null;
     const windStr =
-      p.windSpeed != null && Number.isFinite(p.windSpeed)
-        ? `${Math.round(p.windSpeed)} km/h ${p.windDir != null && Number.isFinite(p.windDir) ? windDirFromDeg(p.windDir) : "—"}`
+      windSpeed != null && Number.isFinite(windSpeed)
+        ? `${Math.round(windSpeed)} km/h ${windDir != null && Number.isFinite(windDir) ? windDirFromDeg(windDir) : "—"}`
         : "—";
     return `<div class="forecast-cell" style="background:${bg};border:${border};padding:8px;border-radius:8px;color:#fff;text-align:center;min-width:64px;">
               <div style="font-weight:700;font-size:1rem;line-height:1.2;">${tempStr}</div>
@@ -599,7 +616,7 @@ function renderForecastBento(
           <tr><td style="padding:8px;font-weight:700;">${label2}</td>${col2}</tr>
         </tbody>
       </table>
-      <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">Rain vs snow: from base temp (cold = snow cm, warm = rain mm). Bar: blue = snow, slate = rain. Orange border = inversion. HRDPS row uses RDPS precip when HRDPS layer unavailable. HRDPS · RDPS.</p>
+      <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">Rain vs snow: from base temp (cold = snow cm, warm = rain mm). Bar: blue = snow, slate = rain. Orange border = inversion. HRDPS row uses RDPS precip and wind when HRDPS layers unavailable. HRDPS · RDPS.</p>
     </div>
     </div>
   `;

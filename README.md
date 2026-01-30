@@ -6,6 +6,7 @@ Honest, independent "Where & Why" weather and snow report for Lake Louise. Mount
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Infrastructure, Mono-Lambda orchestrator, coordinate pins.
 - **[docs/CONTENT_LOGIC.md](docs/CONTENT_LOGIC.md)** — Stash Finder, Groomer Check, operational gates, forecast model consensus.
+- **[docs/MODELS_ROCKIES_OPERATIONS.md](docs/MODELS_ROCKIES_OPERATIONS.md)** — Why HRDPS/RDPS/GDPS for Canadian Rockies ski ops (resolution, orographic lift, wind channelling, Chinook, freezing level).
 
 ## Stack (target)
 
@@ -35,6 +36,15 @@ nix develop
 
 Before first Terraform apply: `cd backend && npm ci && npm run build`.
 
+### View dashboard locally
+
+From `backend/`:
+
+- **Build, render, and open in browser:** `npm run dry-render:open`
+- **Render only (no open):** `npm run dry-render` — then open `file:///tmp/lakeloui_live_dry_index.html` in your browser.
+
+The first run fetches models (GeoMet HRDPS/RDPS/GDPS); later runs use cache until stale (e.g. 5 h for models). To force a fresh fetch: `FORCE_FETCH=1 npm run dry-render`.
+
 ### Deploy and test on AWS
 
 1. **Build backend:** `cd backend && npm ci && npm run build`
@@ -53,6 +63,6 @@ The orchestrator fetches **Paradise Top** (summit) and **Base (Operations)** whe
 cd backend && node scripts/list-weatherlink-stations.mjs
 ```
 
-Then set `weatherlink_station_id` (Paradise Top) and `weatherlink_station_id_base` (Base) in `terraform.tfvars` and run `terraform apply`. For local runs, set `WEATHERLINK_API_KEY`, `WEATHERLINK_API_SECRET`, `WEATHERLINK_STATION_ID`, and `WEATHERLINK_STATION_ID_BASE` in the environment.
+Then set `weatherlink_station_id` (Paradise Top) and `weatherlink_station_id_base` (Base) in `terraform.tfvars` and run `terraform apply`. For local runs: set `WEATHERLINK_API_KEY`, `WEATHERLINK_API_SECRET`, `WEATHERLINK_STATION_ID`, and `WEATHERLINK_STATION_ID_BASE` in the environment, or copy `backend/env.example` to `backend/.env` and fill in — `node run_dry_render.cjs` loads `.env` automatically so station readings are included in the render.
 
 **Before deploy:** Ensure both station IDs are in `terraform.tfvars`; if you ever shared your API key/secret, rotate them in the WeatherLink dashboard and update tfvars.
