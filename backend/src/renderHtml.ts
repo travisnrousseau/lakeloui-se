@@ -217,14 +217,14 @@ function formatPrecipPeriodsSnowEquiv(
   const add = (label: string, mm: number | null | undefined) => {
     if (mm == null) return;
     const cmSnow = Math.round(depthCmFromSwe(mm, t) * 10) / 10;
-    parts.push(`${label} ${mm} mm liquid equiv. (${cmSnow} cm snow)`);
+    parts.push(`${escapeHtml(label)} ${escapeHtml(String(mm))} mm liquid equiv. <strong>(${escapeHtml(String(cmSnow))} cm snow)</strong>`);
   };
   add("12h", p.precip12hMm);
   add("24h", p.precip24hMm);
   add("48h", p.precip48hMm);
   add("7d", p.precip7dMm);
   if (parts.length === 0) return "—";
-  return `<div class="snow-equiv-periods">${parts.map((line) => `<span>${escapeHtml(line)}</span>`).join("")}</div>`;
+  return `<div class="snow-equiv-periods">${parts.map((line) => `<span>${line}</span>`).join("")}</div>`;
 }
 
 /** Default summit temp °C when WeatherLink missing (conservative SLR for calculated upper snow). */
@@ -524,7 +524,12 @@ function renderForecastBento(
     }
   }
 
-  const cellFor = (modelArr: ForecastPeriod[] | undefined, lead: number) => {
+  /** When precipFallback is set (e.g. RDPS), use its precip for display when this row has none — so HRDPS row shows RDPS snow when HRDPS layer unavailable. */
+  const cellFor = (
+    modelArr: ForecastPeriod[] | undefined,
+    lead: number,
+    precipFallback?: ForecastPeriod[] | undefined
+  ) => {
     const p = getPeriod(modelArr, lead);
     if (!p) return `<div class="forecast-cell-empty">—</div>`;
     const base = p.tempBase != null && Number.isFinite(p.tempBase) ? Math.round(p.tempBase) : null;
@@ -541,15 +546,26 @@ function renderForecastBento(
     if (inversion) bg = "#3d2b1a";
     const border = inversion ? "1px solid #ff5f00" : "1px solid transparent";
     const tempStr = base != null && summit != null ? `${summit}° / ${base}°` : summit != null ? `${summit}°` : base != null ? `${base}°` : "—";
-    const precipStr = precipDisplay(p.precipMm ?? null, meanTemp, p.tempBase ?? null);
+    const precipMm = (p.precipMm != null && Number.isFinite(p.precipMm) && p.precipMm > 0)
+      ? p.precipMm
+      : (precipFallback ? getPeriod(precipFallback, lead)?.precipMm : null) ?? null;
+    const precipTemp = precipMm != null && (p.precipMm == null || !Number.isFinite(p.precipMm) || p.precipMm <= 0) && precipFallback
+      ? getPeriod(precipFallback, lead)
+      : p;
+    const precipStr = precipDisplay(precipMm, (precipTemp?.tempBase != null && precipTemp?.tempSummit != null) ? (precipTemp.tempBase + precipTemp.tempSummit) / 2 : meanTemp, precipTemp?.tempBase ?? p.tempBase ?? null);
+    const windStr =
+      p.windSpeed != null && Number.isFinite(p.windSpeed)
+        ? `${Math.round(p.windSpeed)} km/h ${p.windDir != null && Number.isFinite(p.windDir) ? windDirFromDeg(p.windDir) : "—"}`
+        : "—";
     return `<div class="forecast-cell" style="background:${bg};border:${border};padding:8px;border-radius:8px;color:#fff;text-align:center;min-width:64px;">
               <div style="font-weight:700;font-size:1rem;line-height:1.2;">${tempStr}</div>
               <div style="font-size:0.8rem;color:#ddd;margin-top:4px;">${precipStr}</div>
+              <div style="font-size:0.75rem;color:#aaa;margin-top:2px;">${escapeHtml(windStr)}</div>
             </div>`;
   };
 
   const headerCols = leads.map(l => `<th style="padding:6px;text-align:center;"><div style="font-weight:700;">${formatLeadTimeShort(l)}</div><div style="font-size:0.75rem;color:var(--gray);font-weight:400;">${l}h</div></th>`).join("");
-  const col1 = leads.map(l => `<td>${cellFor(arr1, l)}</td>`).join("");
+  const col1 = leads.map(l => `<td>${cellFor(arr1, l, arr2)}</td>`).join("");
   const col2 = leads.map(l => `<td>${cellFor(arr2, l)}</td>`).join("");
 
   const svgBlock = renderForecastSvg(arr1, arr2);
@@ -583,7 +599,7 @@ function renderForecastBento(
           <tr><td style="padding:8px;font-weight:700;">${label2}</td>${col2}</tr>
         </tbody>
       </table>
-      <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">Rain vs snow: from base temp (cold = snow cm, warm = rain mm). Bar: blue = snow, slate = rain. Orange border = inversion. HRDPS · RDPS.</p>
+      <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">Rain vs snow: from base temp (cold = snow cm, warm = rain mm). Bar: blue = snow, slate = rain. Orange border = inversion. HRDPS row uses RDPS precip when HRDPS layer unavailable. HRDPS · RDPS.</p>
     </div>
     </div>
   `;
@@ -623,14 +639,8 @@ export function renderHtml(data: RenderData): string {
       ? `${Math.round(base.wind_speed)} KM/H ${base.wind_direction_deg != null ? windDirFromDeg(base.wind_direction_deg) : "—"}`
       : "-- KM/H --";
 
-  const summitWindMeta = [
-    summit?.data_ts != null ? formatWindAsOf(summit.data_ts) : "",
-    summit?.wind_speed != null && summit?.wind_direction_deg == null ? "Direction not reported by station." : ""
-  ].filter(Boolean).join(" · ");
-  const baseWindMeta = [
-    base?.data_ts != null ? formatWindAsOf(base.data_ts) : "",
-    base?.wind_speed != null && base?.wind_direction_deg == null ? "Direction not reported by station." : ""
-  ].filter(Boolean).join(" · ");
+  const summitWindMeta = summit?.data_ts != null ? formatWindAsOf(summit.data_ts) : "";
+  const baseWindMeta = base?.data_ts != null ? formatWindAsOf(base.data_ts) : "";
 
   const df = data.detailedForecast;
   const forecastBento = df
