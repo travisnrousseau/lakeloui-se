@@ -10,7 +10,7 @@ export const HTML_TEMPLATE = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LAKELOUI.SE | Trav's Weather Dashboard</title>
+<title>WX.LAKELOUI.SE | Trav's Weather Dashboard</title>
 <style>
 :root{--black:#000;--white:#fff;--cyan:#00d4ff;--orange:#ff5f00;--gray:#86868b;--gray-dark:#1c1c1e;--u:8px;--u2:16px;--u3:24px;--u4:32px;--u8:64px;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -32,6 +32,8 @@ header{grid-column:span 2;display:flex;justify-content:space-between;align-items
 .snow-row{display:flex;justify-content:space-between;align-items:center;font-size:0.9375rem;}
 .snow-label{color:var(--gray);}
 .snow-cm{font-weight:600;}
+.snow-equiv-periods{display:flex;flex-direction:column;gap:6px;margin-top:6px;font-size:0.875rem;}
+.snow-equiv-periods span{display:block;}
 .snow-upper-label{margin-top:var(--u2);font-size:0.8125rem;}
 .snow-conditions{margin-top:var(--u);color:var(--gray);font-size:0.875rem;}
 .snow-updated{margin-top:var(--u);font-size:0.75rem;color:var(--gray);}
@@ -70,7 +72,7 @@ footer{grid-column:span 2;display:flex;justify-content:space-between;align-items
 <body class="{{BODY_CLASS}}" style="{{BODY_STYLE}}">
 <div class="dashboard">
 <header>
-<div class="logo">LAKELOUI.SE</div>
+<div class="logo">WX.LAKELOUI.SE</div>
 <div class="text-muted">[TRAV'S DASHBOARD]</div>
 <div class="text-muted">AVALANCHE: ● | <span id="time">{{TIME}}</span></div>
 </header>
@@ -101,14 +103,14 @@ footer{grid-column:span 2;display:flex;justify-content:space-between;align-items
 <p id="stash-why">{{STASH_WHY}}</p>
 </section>
 <section class="card card-intelligence">
-<div class="text-muted">New Snow (Pika)</div>
+<div class="text-muted">Pika & Skoki (GOES-18)</div>
 {{SNOW_REPORT_CARD}}
 </section>
 <section class="card card-intelligence" style="grid-column: span 2;">
-<div class="text-muted">FORECAST (Bento)</div>
-<p class="snow-conditions text-muted">HRDPS Tactical Path (Line) vs RDPS Variance (Glow).</p>
+<div class="text-muted">48H FORECAST</div>
+<p class="snow-conditions text-muted">{{FORECAST_MODELS_DESC}}</p>
 {{FORECAST_BENTO}}
-<p class="snow-updated" style="margin-top:var(--u2); border-top: 1px solid rgba(255,255,255,0.1); padding-top: var(--u);">{{GDPS_TREND}}</p>
+<p class="snow-updated" style="margin-top:var(--u2); border-top: 1px solid rgba(255,255,255,0.1); padding-top: var(--u);"><strong>7-day:</strong> {{GDPS_TREND}}</p>
 </section>
 <section class="card card-intelligence">
 <div class="text-muted">SNOW PHONE</div>

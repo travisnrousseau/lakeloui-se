@@ -2,14 +2,19 @@ import { createHash } from "crypto";
 import type { ScheduledHandler, ScheduledEvent, Context } from "aws-lambda";
 import { fetchResortXml, getPikaSnowReport } from "./resortXml.js";
 import { fetchAllWaterStations } from "./waterOffice.js";
-import { fetchAllMscData, fetchForecastTimeline, fetchDetailedForecast } from "./mscModels.js";
+import { fetchPika, fetchSkoki } from "./pikaSkoki.js";
 import { fetchAllWeatherLinkStations, normalizeStationVitals } from "./weatherLink.js";
 import { fetchTownsite } from "./townsite.js";
 import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-cloudfront";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import type { ForecastPeriod } from "./mscModels.js";
+import { fetchGeometForecastTimeline, fetchGeometDetailedForecast } from "./geometForecast.js";
 import { renderHtml, type RenderData } from "./renderHtml.js";
+
+/** Canadian models via GeoMet WCS (HRDPS, GDPS). Set GEOMET_ENABLED=1 to fetch. */
+const GEOMET_ENABLED = process.env.GEOMET_ENABLED === "1" || process.env.GEOMET_ENABLED === "true";
 
 const ddbClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddbClient);
@@ -19,6 +24,51 @@ const cloudfrontClient = new CloudFrontClient({});
 const LIVE_LOG_TABLE = process.env.LIVE_LOG_TABLE!;
 const FRONTEND_BUCKET = process.env.FRONTEND_BUCKET!;
 const FRONTEND_DISTRIBUTION_ID = process.env.FRONTEND_DISTRIBUTION_ID;
+
+/**
+ * Merge timeline with previous snapshot: use previous periods for any lead hour the new fetch doesn't cover
+ * (e.g. when the new run doesn't have 0h/3h yet). Keeps "now" and near-term from last run.
+ */
+function mergeTimelineWithPrevious(
+  newTimeline: ForecastPeriod[],
+  prevTimeline: ForecastPeriod[] | undefined
+): ForecastPeriod[] {
+  if (!prevTimeline?.length) return newTimeline;
+  const newLeads = new Set(newTimeline.map((p) => p.leadHours));
+  const fromPrev = prevTimeline.filter((p) => !newLeads.has(p.leadHours));
+  if (fromPrev.length === 0) return newTimeline;
+  const merged = [...fromPrev, ...newTimeline].sort((a, b) => a.leadHours - b.leadHours);
+  return merged;
+}
+
+/**
+ * Merge detailed forecast rows with previous: fill missing lead hours (e.g. 0h/3h) from previous snapshot
+ * so the table doesn't have gaps when the new run doesn't cover "now" yet.
+ */
+function mergeDetailedWithPrevious(
+  newDetailed: RenderData["detailedForecast"],
+  prevDetailed: RenderData["detailedForecast"] | undefined
+): RenderData["detailedForecast"] {
+  if (!newDetailed || !prevDetailed) return newDetailed ?? prevDetailed ?? undefined;
+  const mergeRow = (
+    newRow: ForecastPeriod[] | undefined,
+    prevRow: ForecastPeriod[] | undefined
+  ): ForecastPeriod[] => {
+    const cur = newRow ?? [];
+    if (!prevRow?.length) return cur;
+    const newLeads = new Set(cur.map((p) => p.leadHours));
+    const fromPrev = prevRow.filter((p) => !newLeads.has(p.leadHours));
+    if (fromPrev.length === 0) return cur;
+    return [...fromPrev, ...cur].sort((a, b) => a.leadHours - b.leadHours);
+  };
+  return {
+    hrdps: mergeRow(newDetailed.hrdps, prevDetailed.hrdps),
+    rdps: mergeRow(newDetailed.rdps, prevDetailed.rdps),
+    gdpsTrend: newDetailed.gdpsTrend,
+    verticalProfile: newDetailed.verticalProfile ?? [],
+    pm25: newDetailed.pm25 ?? null
+  };
+}
 
 /** Recursively remove NaN, undefined, and Error instances so DynamoDB gets clean values. */
 function sanitizeForDynamo(value: unknown): unknown {
@@ -105,7 +155,7 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       console.error("Townsite fetch failed:", err);
     }
 
-    // 3. Fetch WaterOffice GOES (Pika/Skoki/Rivers) (non-blocking)
+    // 3. Fetch WaterOffice GOES (Bow, Pipestone, Louise Creek) (non-blocking)
     let waterData: Awaited<ReturnType<typeof fetchAllWaterStations>> = [];
     try {
       waterData = await fetchAllWaterStations();
@@ -114,28 +164,82 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       console.error("WaterOffice fetch failed:", err);
     }
 
-    // 4. Fetch MSC Consensus Models (HRDPS, RDPS, GDPS, FireWork) (non-blocking)
-    let mscData: Awaited<ReturnType<typeof fetchAllMscData>> = {};
+    // 3b. Fetch Pika & Skoki (GOES-18 / ACIS) — stubbed until API available
+    let pikaData: Awaited<ReturnType<typeof fetchPika>> = null;
+    let skokiData: Awaited<ReturnType<typeof fetchSkoki>> = null;
     try {
-      mscData = await fetchAllMscData();
-      if (mscData.hrdps) console.log("Fetched HRDPS Data.");
+      [pikaData, skokiData] = await Promise.all([fetchPika(), fetchSkoki()]);
+      if (pikaData) console.log("Fetched Pika (GOES-18).");
+      if (skokiData) console.log("Fetched Skoki (GOES-18).");
     } catch (err) {
-      console.error("MSC fetch failed:", err);
+      console.error("Pika/Skoki fetch failed:", err);
     }
 
-    // 4b. Consensus forecast timeline (HRDPS → RDPS → GDPS) for Lake Louise
-    let forecastTimeline: Awaited<ReturnType<typeof fetchForecastTimeline>> = [];
-    let detailedForecast: Awaited<ReturnType<typeof fetchDetailedForecast>> | null = null;
-    try {
-      console.log("Fetching forecast timeline (HRDPS/RDPS/GDPS)...");
-      [forecastTimeline, detailedForecast] = await Promise.all([
-        fetchForecastTimeline(),
-        fetchDetailedForecast()
-      ]);
-      console.log(`Forecast timeline: ${forecastTimeline.length} periods`);
-      if (forecastTimeline.length === 0) console.warn("Forecast empty — check first-failure log above for idx/URL.");
-    } catch (err) {
-      console.error("Forecast timeline fetch failed:", err);
+    // 4. Forecast: Canadian models via GeoMet when enabled; hash check like resort XML so we only update when ECCC changes data
+    let forecastTimeline: ForecastPeriod[] = [];
+    let detailedForecast: RenderData["detailedForecast"] = undefined;
+    let geometHash: string | null = null;
+    if (GEOMET_ENABLED) {
+      let lastGeometHash: string | null = null;
+      let lastSnapshot: { forecastTimeline?: unknown; detailedForecast?: unknown } | null = null;
+      try {
+        const [hashMeta, snapshotResult] = await Promise.all([
+          docClient.send(new GetCommand({
+            TableName: LIVE_LOG_TABLE,
+            Key: { pk: "FRONTEND_META", sk: "GEOMET_HASH" }
+          })),
+          docClient.send(new QueryCommand({
+            TableName: LIVE_LOG_TABLE,
+            KeyConditionExpression: "pk = :pk",
+            ExpressionAttributeValues: { ":pk": "LIVE_SNAPSHOT" },
+            ScanIndexForward: false,
+            Limit: 1
+          }))
+        ]);
+        lastGeometHash = (hashMeta.Item?.geometHash as string) ?? null;
+        const latest = snapshotResult.Items?.[0];
+        if (latest?.forecastTimeline != null) lastSnapshot = latest as { forecastTimeline: unknown; detailedForecast: unknown };
+      } catch (_) {
+        // ignore; we'll use fresh fetch
+      }
+      try {
+        const [timeline, detailed] = await Promise.all([
+          fetchGeometForecastTimeline(),
+          fetchGeometDetailedForecast(),
+        ]);
+        const prevTimeline = lastSnapshot?.forecastTimeline as ForecastPeriod[] | undefined;
+        const prevDetailed = lastSnapshot?.detailedForecast as RenderData["detailedForecast"] | undefined;
+        const mergedTimeline = mergeTimelineWithPrevious(timeline, prevTimeline);
+        const mergedDetailed = detailed
+          ? mergeDetailedWithPrevious(detailed, prevDetailed)
+          : (prevDetailed ?? undefined);
+        geometHash = createHash("sha256")
+          .update(JSON.stringify({ mergedTimeline, mergedDetailed }))
+          .digest("hex");
+        if (lastGeometHash !== null && geometHash === lastGeometHash && lastSnapshot?.forecastTimeline != null) {
+          forecastTimeline = (lastSnapshot.forecastTimeline as ForecastPeriod[]) ?? mergedTimeline;
+          detailedForecast = (lastSnapshot.detailedForecast as RenderData["detailedForecast"]) ?? mergedDetailed;
+          console.log("GeoMet unchanged (hash match). Using cached forecast.");
+        } else {
+          forecastTimeline = mergedTimeline;
+          detailedForecast = mergedDetailed;
+          if (mergedTimeline.length > 0) {
+            const filled = mergedTimeline.length - timeline.length;
+            if (filled > 0) {
+              console.log(`GeoMet forecast: ${mergedTimeline.length} timeline period(s) (${filled} from previous run).`);
+            } else {
+              console.log(`GeoMet forecast: ${mergedTimeline.length} timeline period(s).`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("GeoMet forecast fetch failed:", err);
+        if (lastSnapshot?.forecastTimeline != null) {
+          forecastTimeline = lastSnapshot.forecastTimeline as ForecastPeriod[];
+          detailedForecast = (lastSnapshot.detailedForecast as RenderData["detailedForecast"]) ?? undefined;
+          console.log("Using previous snapshot forecast after fetch failure.");
+        }
+      }
     }
 
     // 5. Mountain Ops - Resort XML (3 AM - 3 PM MST). Non-blocking; use last snow report from DDB if fetch fails.
@@ -233,7 +337,7 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
 
     const heavySnow = pikaSnowReport != null && pikaSnowReport.snow24Hours >= 15;
 
-    const basePoint = mscData.hrdps && "BASE" in mscData.hrdps ? (mscData.hrdps as any).BASE : null;
+    // Inversion: high pressure only (no Canadian model 850/700 mb when using NOAA)
     // weatherLinkData is [Paradise, Base] (null for missing). Preserve order for render: index 0 = summit, 1 = base.
     let weatherForRender = await Promise.all(weatherLinkData.map(async (s, idx) => {
       if (!s) return {};
@@ -293,10 +397,7 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
     // Townsite: kept in code only; do not use for display or as fallback (DATA_SOURCES.md).
     // Inversion: 850 vs 700 mb temp (HRDPS) and/or high surface pressure (WeatherLink bar in hPa)
     const barHigh = weatherForRender.some((w) => w.bar_sea_level != null && w.bar_sea_level > 1018);
-    const inversionFromAloft = Boolean(
-      basePoint && basePoint.temp700 != null && basePoint.temp850 != null && basePoint.temp700 > basePoint.temp850
-    );
-    const inversionActive = inversionFromAloft || barHigh;
+    const inversionActive = barHigh;
 
     // Current hero/stash text (AI-generated when shouldProcessAI, else fallback)
     const aiScript = shouldProcessAI
@@ -309,7 +410,6 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
 
     const renderData: RenderData = {
       weather: weatherForRender,
-      msc: mscData,
       forecastTimeline,
       detailedForecast: detailedForecast ?? undefined,
       aiScript,
@@ -318,7 +418,9 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       inversionActive,
       heavySnow,
       snowReport: pikaSnowReport ?? undefined,
-      snowReportUpdatedAt
+      snowReportUpdatedAt,
+      waterOffice: waterData.length > 0 ? waterData : undefined,
+      goesStations: { pika: pikaData ?? undefined, skoki: skokiData ?? undefined }
     };
     await publishHtml(renderHtml(renderData));
 
@@ -342,9 +444,9 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       weatherSummary,
       townsite: townsiteData ?? null,
       water: waterData,
-      msc: mscData,
       forecastTimeline,
       detailedForecast,
+      geometHash: geometHash ?? null,
       resort: resortData ? resortData.report : null,
       resortLocations: resortData ? resortData.report.currentConditions?.resortLocations : null,
       resortXmlHash: resortData?.xmlHash ?? null,
@@ -362,6 +464,18 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       TableName: LIVE_LOG_TABLE,
       Item: logItem
     }));
+
+    if (geometHash != null) {
+      await docClient.send(new PutCommand({
+        TableName: LIVE_LOG_TABLE,
+        Item: {
+          pk: "FRONTEND_META",
+          sk: "GEOMET_HASH",
+          geometHash,
+          updatedAt: now.toISOString()
+        }
+      }));
+    }
 
     // When AI ran, append to AI report history for future use
     if (shouldProcessAI) {

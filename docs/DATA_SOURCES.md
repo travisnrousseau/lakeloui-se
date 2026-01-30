@@ -132,7 +132,11 @@ Discrepancies between the two stations indicate local mountain effects: e.g. hig
 
 For Flood Sentinel and Creek Crossing, link Skoki/Pika to **05BA001 (Bow at Lake Louise)** and **05BA002 (Pipestone)**. **Rule of thumb:** A rapid decrease in Skoki SWE typically leads to a **12–24 hour lag** before a significant rise at the Pipestone flow meter (see CONTENT_LOGIC §XI).
 
-#### Direct data access
+#### Distance
+
+**Pika and Skoki are ~10 km apart.** The dashboard GOES card always shows both stations (Pika Run mid-mountain, Skoki snow pillow); values appear when a data source is configured.
+
+#### Direct data access (preferred for Pika/Skoki)
 
 | Use | URL |
 |-----|-----|
@@ -140,7 +144,45 @@ For Flood Sentinel and Creek Crossing, link Skoki/Pika to **05BA001 (Bow at Lake
 | **Historical** | [Alberta Climate Information Service (ACIS)](https://acis.alberta.ca/) |
 | **Snow safety** | [Avalanche Canada — Mountain Weather Forecast](https://www.avalanche.ca/) |
 
-**Implementation:** Add a dedicated fetcher for ACIS / Alberta River Basins when API or CSV access for SKOQ1 and Pika Run is confirmed; wire Skoki SWE (and optionally Pika wind/precip) into Flood Sentinel and Creek Crossing logic.
+**JSON table endpoints (used by this app):** Alberta River Basins exposes table JSON for station/parameter. Precipitation (PC, mm, 15‑min):
+
+- **Pika Run (mid):** `https://rivers.alberta.ca/apps/Basins/data/figures/river/abrivers/stationdata/M_PC_05BA815_table.json` — station 05BA815 "Pika Run - EPA".
+- **Skoki (pillow):** `https://rivers.alberta.ca/apps/Basins/data/figures/river/abrivers/stationdata/M_PC_05CA805_table.json` — station 05CA805 "Skoki Lodge - EPA".
+
+Response: array of one object with `station_name`, `data` (array of `[timestamp, value]`), `ts_unitsymbols` (e.g. `["mm"]`). We use the last row for latest precip.
+
+#### MSC GeoMet (EC) — checked
+
+We queried **api.weather.gc.ca** to see if Pika and Skoki are available for current data:
+
+| What | Result |
+|------|--------|
+| **climate-stations** | `bbox=-116.5,51.2,-115.8,51.6` returns **Skoki** (CLIMATE_IDENTIFIER **3055976**), **LAKE LOUISE** (3053760), and others (Field, Yoho, Temple, etc.). **Pika Run is not in the EC list** — it is Alberta/ACIS only. |
+| **climate-daily** (Skoki 3055976) | Data exists but **latest observation is 2005-02-28**. Historical only, not real-time. |
+| **climate-daily** (Lake Louise 3053760) | Latest **2007-11-30**. Also historical. |
+| **climate-hourly** | Skoki and Lake Louise have **HAS_HOURLY_DATA=N** in climate-stations; hourly collection returns 0 items for 3055976. |
+
+**Conclusion:** MSC GeoMet is **not usable for current Pika/Skoki display**. Use it only for historical/backfill (e.g. Skoki daily 2000–2005) if needed. For live data, stick to ACIS / Alberta River Basins or 511 Alberta as proxy.
+
+#### Where to get recent (now) GOES data
+
+| Source | Has “now” data? | Notes |
+|--------|------------------|--------|
+| **NOAA GOES DCS (DADDS)** | Yes (raw DCP messages) | **Requires Systems Use Agreement (SUA)** with NESDIS. Not a public API. Portals: dcs1.noaa.gov – dcs4.noaa.gov. Eligibility: U.S. federal/state/local gov, international gov with U.S. sponsorship. This is where Pika/Skoki telemetry arrives via GOES-18; you need an SUA to receive the stream. Contact: (757) 824-7450; application at noaasis.noaa.gov/GOES/GOES_DCS/appnewsua.html. |
+| **Alberta River Basins / ACIS** | Yes (downstream of GOES) | Alberta receives GOES DCP data and displays it on rivers.alberta.ca. **Table JSON** for Pika (05BA815) and Skoki (05CA805) is used by this app — see "Direct data access" above. |
+| **EC SWOB real-time** | Yes (other stations) | **api.weather.gc.ca/collections/swob-realtime** — real-time surface weather (last 30 days). In Lake Louise bbox we get **“Lake Louise”** and **“Castle”** (air_temp, snw_dpth, precip, wind, etc.). **Pika and Skoki are not in SWOB** (they are Alberta/ACIS GOES-only). Use SWOB for nearby “now” conditions (Lake Louise, Castle) as a proxy if needed. |
+| **NWRFC** | Display only | NWRFC shows SKOQ1 (Skoki) on the web; as of 2025 some graphs discontinued, users directed to Alberta. No public machine-readable current-observations feed found; csv_forcings.cgi is **forecast** (model) data, not observed GOES. |
+
+**Summary:** This app uses the **rivers.alberta.ca table JSON** endpoints for Pika and Skoki (see "Direct data access" above). For other needs there is **no public unauthenticated API** that returns current Pika/Skoki GOES data. Options: (1) apply for a **NOAA GOES DCS SUA** to receive the DCP stream; (2) ask **Alberta (AENV-WebWS@gov.ab.ca)** for API/export of GOES-derived Pika/Skoki; (3) use **SWOB** for “Lake Louise” and “Castle” as the best public “now” data in the area (not Pika/Skoki).
+
+#### Alternative, more usable sources (APIs)
+
+| Source | Endpoint | Notes |
+|--------|----------|--------|
+| **511 Alberta** | `GET https://511.alberta.ca/api/v2/get/weatherstations` | JSON/XML. Highway/road stations (temp, wind, humidity). Filter by lat/lon for Lake Louise. Rate limit ~10/min. May not include Pika/Skoki but useful for valley/road. |
+| **MSC GeoMet (EC)** | `climate-stations`, `climate-daily` | Skoki (3055976) and Lake Louise (3053760) are in the API; observations are **historical only** (see above). |
+
+**Implementation:** `backend/src/pikaSkoki.ts` fetches Pika (05BA815) and Skoki (05CA805) from the rivers.alberta.ca table JSON URLs above. The GOES card shows latest precipitation (mm) and timestamp for each; ~10 km apart.
 
 ---
 
