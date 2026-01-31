@@ -4,7 +4,7 @@
  * GeoMet returns latest run; we fill 6–48h using one HRDPS value (6–24h) and one GDPS value (36–48h).
  */
 
-import type { ForecastPeriod, DetailedForecast } from "./mscModels.js";
+import type { ForecastPeriod, ForecastDay, DetailedForecast } from "./mscModels.js";
 import {
   getCapabilities,
   getHrdpsTemp2m,
@@ -12,16 +12,18 @@ import {
   getHrdpsWind10m,
   getRdpsTemp2m,
   getRdpsPrecipMm,
-  getRdpsPblHeightM,
   getRdpsWind10m,
+  getRdpsWind80m,
   getGdpsTemp2m,
+  getGdpsPrecipMm,
+  getGdpsWind10m,
   COORDS,
   COVERAGE_IDS,
 } from "./geometClient.js";
 import { getSummitPointForTemp } from "./elevation.js";
 
-/** Table leads: 0h–48h; HRDPS 0–24h, GDPS 36–48h. Render uses whatever leads are present in data. */
-export const FORECAST_LEADS = [0, 3, 6, 12, 18, 24, 36, 48];
+/** Table leads: 0h–42h (last column Sun ~08:46); HRDPS 0–24h, GDPS 36–42h. Render uses whatever leads are present in data. */
+export const FORECAST_LEADS = [0, 3, 6, 12, 18, 24, 36, 42];
 const LEADS = FORECAST_LEADS;
 
 /** Normalize ISO8601 to comparable form (no sub-ms). */
@@ -40,6 +42,27 @@ async function getAvailableLeadsForLayer(ref: Date, layerName: string): Promise<
   return FORECAST_LEADS.filter((h) => set.has(normalizeTimeIso(validTimeIso(ref, h))));
 }
 
+/** Lead hours for 7-day table: one per day (24h–168h). */
+export const SEVEN_DAY_LEADS = [24, 48, 72, 96, 120, 144, 168];
+
+/** Extra leads for daily low/high: mid and end of each 24h window (12, 24, 36, 48, …, 168). */
+const SEVEN_DAY_LEADS_DETAILED = [12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 168];
+
+/**
+ * Return subset of leadSet for which the layer has a valid time in GetCapabilities.
+ * Used for 7-day RDPS/GDPS table.
+ */
+async function getAvailableLeadsInSet(
+  ref: Date,
+  layerName: string,
+  leadSet: number[]
+): Promise<number[]> {
+  const times = await getCapabilities(layerName);
+  if (times.length === 0) return [...leadSet];
+  const validSet = new Set(times.map(normalizeTimeIso));
+  return leadSet.filter((h) => validSet.has(normalizeTimeIso(validTimeIso(ref, h))));
+}
+
 /** HRDPS runs at 00, 06, 12, 18 UTC. Return latest run time (UTC) at or before now. */
 function getHrdpsReferenceTimeUtc(): Date {
   const now = new Date();
@@ -47,6 +70,32 @@ function getHrdpsReferenceTimeUtc(): Date {
   const runHour = Math.floor(hour / 6) * 6; // 0, 6, 12, 18
   const ref = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), runHour, 0, 0, 0));
   if (ref.getTime() > now.getTime()) ref.setUTCHours(ref.getUTCHours() - 6);
+  return ref;
+}
+
+/** RDPS runs at 00 and 12 UTC only (like GDPS). Return latest run time (UTC) at or before now. */
+function getRdpsReferenceTimeUtc(): Date {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  const runHour = hour >= 12 ? 12 : 0;
+  const ref = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), runHour, 0, 0, 0));
+  if (ref.getTime() > now.getTime()) {
+    ref.setUTCDate(ref.getUTCDate() - 1);
+    ref.setUTCHours(12);
+  }
+  return ref;
+}
+
+/** GDPS runs at 00 and 12 UTC only. Return latest run time (UTC) at or before now. */
+function getGdpsReferenceTimeUtc(): Date {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  const runHour = hour >= 12 ? 12 : 0;
+  const ref = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), runHour, 0, 0, 0));
+  if (ref.getTime() > now.getTime()) {
+    ref.setUTCDate(ref.getUTCDate() - 1);
+    ref.setUTCHours(12);
+  }
   return ref;
 }
 
@@ -161,24 +210,30 @@ export async function fetchGeometForecastTimeline(): Promise<ForecastPeriod[]> {
     let b: number | null = null;
     let s: number | null = null;
     let precipMm: number | null = null;
+    let wind: { speedKmh: number; dirDeg: number } | null = null;
     if (useGdps) {
-      s = await getGdpsTemp2m(summitPoint.lat, summitPoint.lon, time);
+      [s, precipMm, wind] = await Promise.all([
+        getGdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
+        getGdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+        getGdpsWind10m(summitPoint.lat, summitPoint.lon, time),
+      ]);
       b = s != null ? lapseCorrectBase(s, COORDS.PARADISE.elevM, COORDS.BASE.elevM) : null;
     } else {
-      [b, s, precipMm] = await Promise.all([
+      [b, s, precipMm, wind] = await Promise.all([
         getHrdpsTemp2m(COORDS.BASE.lat, COORDS.BASE.lon, time),
         getHrdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
         getHrdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+        getHrdpsWind10m(summitPoint.lat, summitPoint.lon, time),
       ]);
     }
     const source = useGdps ? "GDPS" : "HRDPS";
-    if (b != null || s != null) timeline.push(period(h, labelForLead(h), b, s, source, precipMm));
+    if (b != null || s != null) timeline.push(period(h, labelForLead(h), b, s, source, precipMm, wind));
   }
   return timeline;
 }
 
 /**
- * Detailed forecast from GeoMet: HRDPS row 0–24h, RDPS row (lapse from 2071 m) per lead, GDPS 36–48h.
+ * Detailed forecast from GeoMet: HRDPS row 0–24h, RDPS row per lead, GDPS 36–42h.
  * Only requests leads reported as available in each layer's GetCapabilities.
  */
 export async function fetchGeometDetailedForecast(): Promise<DetailedForecast> {
@@ -205,10 +260,14 @@ export async function fetchGeometDetailedForecast(): Promise<DetailedForecast> {
     const time = validTimeIso(ref, h);
     const useGdps = h >= 36;
     if (useGdps) {
-      const s = await getGdpsTemp2m(summitPoint.lat, summitPoint.lon, time);
+      const [s, precipMm, wind] = await Promise.all([
+        getGdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
+        getGdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+        getGdpsWind10m(summitPoint.lat, summitPoint.lon, time),
+      ]);
       const b = s != null ? lapseCorrectBase(s, COORDS.PARADISE.elevM, COORDS.BASE.elevM) : null;
       if (b != null || s != null) {
-        hrdps.push(period(h, labelForLead(h), b, s, "GDPS", null));
+        hrdps.push(period(h, labelForLead(h), b, s, "GDPS", precipMm, wind));
         if (gdpsSummit == null) gdpsSummit = s;
         if (gdpsBase == null) gdpsBase = b;
       }
@@ -223,33 +282,186 @@ export async function fetchGeometDetailedForecast(): Promise<DetailedForecast> {
     }
   }
 
+  // RDPS 10 km: query base and summit grid cells separately; use 2m temps directly (no lapse).
+  // Wind: prefer 80 m at summit (ridge-level); fall back to 10 m at base if 80 m unavailable.
   const rdps: ForecastPeriod[] = [];
   for (const h of rdpsLeads) {
     const time = validTimeIso(ref, h);
-    const [rdpsAtRef, rdpsPblHeight, rdpsPrecip, wind] = await Promise.all([
+    const [rdpsBase, rdpsSummit, rdpsPrecip, wind80m, wind10m] = await Promise.all([
       getRdpsTemp2m(COORDS.BASE.lat, COORDS.BASE.lon, time),
-      getRdpsPblHeightM(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getRdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
       getRdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getRdpsWind80m(summitPoint.lat, summitPoint.lon, time),
       getRdpsWind10m(COORDS.BASE.lat, COORDS.BASE.lon, time),
     ]);
-    const corrected =
-      rdpsAtRef != null
-        ? lapseCorrectFromRefWithPbl(
-            rdpsAtRef,
-            RDPS_REF_ELEV_M,
-            COORDS.BASE.elevM,
-            COORDS.PARADISE.elevM,
-            rdpsPblHeight
-          )
-        : null;
-    if (corrected != null) {
-      rdps.push(period(h, labelForLead(h), corrected.baseTemp, corrected.summitTemp, "RDPS", rdpsPrecip, wind));
+    const wind = wind80m ?? wind10m;
+    if (rdpsBase != null || rdpsSummit != null) {
+      rdps.push(period(h, labelForLead(h), rdpsBase ?? null, rdpsSummit ?? null, "RDPS", rdpsPrecip, wind));
     }
   }
+
+  // 7-day table: RDPS and GDPS for leads 24, 48, 72, 96, 120, 144, 168 h (same layout as HRDPS/RDPS table).
+  // RDPS and GDPS run 00/12 UTC only; use rdpsRef/gdpsRef so GetCapabilities times match.
+  const rdpsRef = getRdpsReferenceTimeUtc();
+  const gdpsRef = getGdpsReferenceTimeUtc();
+  const [rdps7dLeads, gdps7dLeads] = await Promise.all([
+    getAvailableLeadsInSet(rdpsRef, COVERAGE_IDS.RDPS_2M_TEMP, SEVEN_DAY_LEADS),
+    getAvailableLeadsInSet(gdpsRef, COVERAGE_IDS.GDPS_2M_TEMP_15KM, SEVEN_DAY_LEADS),
+  ]);
+
+  const rdps7d: ForecastPeriod[] = [];
+  for (const h of rdps7dLeads) {
+    const time = validTimeIso(rdpsRef, h);
+    const [rdpsBase, rdpsSummit, rdpsPrecip, wind80m, wind10m] = await Promise.all([
+      getRdpsTemp2m(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getRdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
+      getRdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getRdpsWind80m(summitPoint.lat, summitPoint.lon, time),
+      getRdpsWind10m(COORDS.BASE.lat, COORDS.BASE.lon, time),
+    ]);
+    const wind = wind80m ?? wind10m;
+    if (rdpsBase != null || rdpsSummit != null) {
+      rdps7d.push(period(h, labelForLead(h), rdpsBase ?? null, rdpsSummit ?? null, "RDPS", rdpsPrecip, wind));
+    }
+  }
+
+  const gdps7d: ForecastPeriod[] = [];
+  for (const h of gdps7dLeads) {
+    const time = validTimeIso(gdpsRef, h);
+    const [s, precipMm, wind] = await Promise.all([
+      getGdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
+      getGdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getGdpsWind10m(summitPoint.lat, summitPoint.lon, time),
+    ]);
+    const b = s != null ? lapseCorrectBase(s, COORDS.PARADISE.elevM, COORDS.BASE.elevM) : null;
+    if (b != null || s != null) {
+      gdps7d.push(period(h, labelForLead(h), b, s, "GDPS", precipMm, wind));
+    }
+  }
+
+  // 7-day daily low/high: fetch mid + end of each 24h window (12, 24, 36, …, 168), then aggregate.
+  const [rdpsDetailLeads, gdpsDetailLeads] = await Promise.all([
+    getAvailableLeadsInSet(rdpsRef, COVERAGE_IDS.RDPS_2M_TEMP, SEVEN_DAY_LEADS_DETAILED),
+    getAvailableLeadsInSet(gdpsRef, COVERAGE_IDS.GDPS_2M_TEMP_15KM, SEVEN_DAY_LEADS_DETAILED),
+  ]);
+
+  const rdpsDetail: ForecastPeriod[] = [];
+  for (const h of rdpsDetailLeads) {
+    const time = validTimeIso(rdpsRef, h);
+    const [rdpsBase, rdpsSummit, rdpsPrecip, wind80m, wind10m] = await Promise.all([
+      getRdpsTemp2m(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getRdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
+      getRdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getRdpsWind80m(summitPoint.lat, summitPoint.lon, time),
+      getRdpsWind10m(COORDS.BASE.lat, COORDS.BASE.lon, time),
+    ]);
+    const wind = wind80m ?? wind10m;
+    if (rdpsBase != null || rdpsSummit != null) {
+      rdpsDetail.push(period(h, labelForLead(h), rdpsBase ?? null, rdpsSummit ?? null, "RDPS", rdpsPrecip, wind));
+    }
+  }
+
+  const gdpsDetail: ForecastPeriod[] = [];
+  for (const h of gdpsDetailLeads) {
+    const time = validTimeIso(gdpsRef, h);
+    const [s, precipMm, wind] = await Promise.all([
+      getGdpsTemp2m(summitPoint.lat, summitPoint.lon, time),
+      getGdpsPrecipMm(COORDS.BASE.lat, COORDS.BASE.lon, time),
+      getGdpsWind10m(summitPoint.lat, summitPoint.lon, time),
+    ]);
+    const b = s != null ? lapseCorrectBase(s, COORDS.PARADISE.elevM, COORDS.BASE.elevM) : null;
+    if (b != null || s != null) {
+      gdpsDetail.push(period(h, labelForLead(h), b, s, "GDPS", precipMm, wind));
+    }
+  }
+
+  /** Build 7 ForecastDay from detailed periods: each day = (endLead - 12, endLead), min/max base & summit. */
+  function buildDays(periods: ForecastPeriod[], endLeads: number[]): ForecastDay[] {
+    const byLead = new Map(periods.map((p) => [p.leadHours, p]));
+    const days: ForecastDay[] = [];
+    for (const endLead of endLeads) {
+      const startLead = endLead - 12;
+      const pStart = byLead.get(startLead);
+      const pEnd = byLead.get(endLead);
+      const baseTemps = [pStart?.tempBase, pEnd?.tempBase].filter((t): t is number => t != null && Number.isFinite(t));
+      const summitTemps = [pStart?.tempSummit, pEnd?.tempSummit].filter((t): t is number => t != null && Number.isFinite(t));
+      const tempBaseLow = baseTemps.length > 0 ? Math.min(...baseTemps) : null;
+      const tempBaseHigh = baseTemps.length > 0 ? Math.max(...baseTemps) : null;
+      const tempSummitLow = summitTemps.length > 0 ? Math.min(...summitTemps) : null;
+      const tempSummitHigh = summitTemps.length > 0 ? Math.max(...summitTemps) : null;
+      const p = pEnd ?? pStart;
+      days.push({
+        leadHours: endLead,
+        label: labelForLead(endLead),
+        tempBaseLow,
+        tempBaseHigh,
+        tempSummitLow,
+        tempSummitHigh,
+        windSpeed: p?.windSpeed ?? null,
+        windDir: p?.windDir ?? null,
+        source: periods[0]?.source ?? "?",
+        precipMm: p?.precipMm ?? null,
+      });
+    }
+    return days;
+  }
+
+  let rdps7dDays = buildDays(rdpsDetail, SEVEN_DAY_LEADS);
+  let gdps7dDays = buildDays(gdpsDetail, SEVEN_DAY_LEADS);
+
+  // When detailed timesteps (12, 24, 36, …) weren't available, fill low/high from snapshot (rdps7d/gdps7d) so we show "X° / X°".
+  const rdps7dByLead = new Map(rdps7d.map((p) => [p.leadHours, p]));
+  const gdps7dByLead = new Map(gdps7d.map((p) => [p.leadHours, p]));
+  rdps7dDays = rdps7dDays.map((d) => {
+    if (
+      d.tempBaseLow != null ||
+      d.tempBaseHigh != null ||
+      d.tempSummitLow != null ||
+      d.tempSummitHigh != null
+    )
+      return d;
+    const snap = rdps7dByLead.get(d.leadHours);
+    if (!snap) return d;
+    return {
+      ...d,
+      tempBaseLow: snap.tempBase ?? null,
+      tempBaseHigh: snap.tempBase ?? null,
+      tempSummitLow: snap.tempSummit ?? null,
+      tempSummitHigh: snap.tempSummit ?? null,
+      precipMm: snap.precipMm ?? d.precipMm,
+      windSpeed: snap.windSpeed ?? d.windSpeed,
+      windDir: snap.windDir ?? d.windDir,
+    };
+  });
+  gdps7dDays = gdps7dDays.map((d) => {
+    if (
+      d.tempBaseLow != null ||
+      d.tempBaseHigh != null ||
+      d.tempSummitLow != null ||
+      d.tempSummitHigh != null
+    )
+      return d;
+    const snap = gdps7dByLead.get(d.leadHours);
+    if (!snap) return d;
+    return {
+      ...d,
+      tempBaseLow: snap.tempBase ?? null,
+      tempBaseHigh: snap.tempBase ?? null,
+      tempSummitLow: snap.tempSummit ?? null,
+      tempSummitHigh: snap.tempSummit ?? null,
+      precipMm: snap.precipMm ?? d.precipMm,
+      windSpeed: snap.windSpeed ?? d.windSpeed,
+      windDir: snap.windDir ?? d.windDir,
+    };
+  });
 
   return {
     hrdps,
     rdps,
+    rdps7d,
+    gdps7d,
+    rdps7dDays,
+    gdps7dDays,
     gdpsTrend:
       gdpsBase != null || gdpsSummit != null
         ? "Long-range (7-day) trend: GeoMet GDPS point data available."

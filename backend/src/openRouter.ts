@@ -1,0 +1,250 @@
+/**
+ * OpenRouter client for the forecast narrative (summary + optional stash + groomer).
+ * Model and system prompt are configurable via env or file.
+ */
+
+import { readFileSync } from "fs";
+import { existsSync } from "fs";
+import { join } from "path";
+import axios from "axios";
+
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+
+/** Env: OpenRouter API key (required to call). Set OPENROUTER_API_KEY locally or in Lambda. */
+export const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY ?? "";
+
+/** Env: Model id (e.g. google/gemini-2.0-flash-001, openai/gpt-4o-mini). */
+export const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL ?? "google/gemini-2.5-flash";
+
+/** Env: Full system prompt string. If set, overrides file. */
+const OPENROUTER_SYSTEM_PROMPT_ENV = process.env.OPENROUTER_SYSTEM_PROMPT ?? "";
+
+/** Env: Path to file containing system prompt (used if OPENROUTER_SYSTEM_PROMPT not set). */
+const OPENROUTER_SYSTEM_PROMPT_FILE =
+  process.env.OPENROUTER_SYSTEM_PROMPT_FILE ?? "";
+
+/** Env: System prompt for 4am (Snow Reporters) report. Overrides file when set. */
+const OPENROUTER_SYSTEM_PROMPT_4AM_ENV = process.env.OPENROUTER_SYSTEM_PROMPT_4AM ?? "";
+/** Env: Path to file for 4am system prompt (used if OPENROUTER_SYSTEM_PROMPT_4AM not set). */
+const OPENROUTER_SYSTEM_PROMPT_FILE_4AM = process.env.OPENROUTER_SYSTEM_PROMPT_FILE_4AM ?? "";
+
+/** Report type: 4am = technical for Snow Reporters (AI_WEATHER_OUTPUT §1.1), 6am = public. */
+export type ReportType = "4am" | "6am";
+
+/** Default system prompt aligned with docs/AI_WEATHER_OUTPUT.md (tone, format, rules, Stash Finder). */
+const DEFAULT_SYSTEM_PROMPT = `You are the weather/ski forecaster for Lake Louise (lakeloui.se). You produce the forecast people read. Tone: Mountain Guide — authoritative, honest, no marketing. Same voice as CONTENT_LOGIC.
+
+Output: Reply with exactly one JSON object, no markdown or extra text. This is the only output.
+{
+  "summary": "The forecast. 1–2 sentences: conditions right now and what to expect. This is the main narrative people read.",
+  "stash_name": "Optional. Short zone name only if wind/aspect favours a stash. Omit if no clear stash or required lifts closed.",
+  "stash_note": "Optional. One sentence: why wind or aspect favours snow there. Omit if no stash.",
+  "groomer_pick": "Optional. One groomed run to highlight. Only pick from groomed_runs in the payload. Omit if none."
+}
+
+Rules (from AI_WEATHER_OUTPUT):
+- Only mention history when the payload has a non-null history_alert (e.g. "On this day in 2019…").
+- Never suggest closed runs or terrain that requires a closed lift. Groomer pick must be from groomed_runs; stash zone must be reachable with open_lifts (e.g. The Horseshoe needs Paradise + Summit Chair open; West Bowl needs Summit Chair; Larch needs Larch Express).
+- Short. Summary: 1–2 sentences. Stash note and groomer pick: one sentence each when present.
+- No hedging fluff — use "might" or "could" only when the data is uncertain; otherwise state what the data says.
+- Exceptional physics: When inversion, Chinook, orographic lift, or similar is in play, call it out in the summary in one short, educational sentence (e.g. "We're in an inversion—cold air is trapped in the valley, so the base can be much colder than the top."). Do not state their absence (e.g. do not say "no inversion" or "no Chinook expected"); only mention them when they are happening. No jargon without a brief plain-language explainer.
+
+Stash Finder (only when there is a clear stash and gates are open):
+- Use wind direction from the payload (summit_wind_dir_deg / base_wind_dir_deg). NW/W → The Horseshoe (A–I Gullies, Paradise lee). SW → Larch & The Glades. E/NE → West Bowl & Front Side ("Townsite Storm").
+- Omit stash_name and stash_note when wind is light/variable or when the favoured zone's lifts are not in open_lifts.
+- Data-driven: do not invent wind or zones; use only what the payload provides.
+
+Output only valid JSON.`;
+
+/** Default 4am (Snow Reporters) system prompt — AI_WEATHER_OUTPUT §1.1: technical, educational. */
+const DEFAULT_SYSTEM_PROMPT_4AM = `You are the weather forecaster for Lake Louise Snow Reporters (04:00 technical report). Tone: Technical but easy to understand. Use terms like orographic lift, inversion, Chinook, freezing level, valley channelling — and explain each in one short phrase so a new Snow Reporter can learn.
+
+The payload includes explicit data so you can call out scientific happenings accurately:
+
+(1) **Pika / snow report:** Use snow_24h_cm and snow_overnight_cm. When snow_report_observed_at is present, state the observation time (e.g. "Pika at 04:00 — 8 cm overnight").
+
+(2) **Next 12 h (HRDPS/RDPS):** When forecast_12h_precip_mm, forecast_12h_wind_kmh, forecast_12h_wind_dir_deg, forecast_12h_temp_base_c, forecast_12h_temp_summit_c are present, use them for "snow forecast in the next 12 hours" and "wind direction forecast". State approximate precip (mm liquid → snow cm when below freezing), wind direction, and temps. Explain why (e.g. orographic lift from W flow) when physics_orographic is true.
+
+(3) **Freezing level:** When freezing_level_m is present, state it (e.g. "Freezing level near 2100 m — snow at summit, possible mix at base") and what it means for rain vs snow.
+
+(4) **Physics flags (call out by name only when true):**
+- inversion_active → Inversion: cold air trapped in valley; base colder than summit; explain briefly.
+- physics_chinook → Chinook: warm dry downslope wind; snow eater; melt-freeze crust risk; explain briefly.
+- physics_orographic → Orographic lift: air forced up by terrain; snow enhanced on windward slopes; explain briefly.
+- physics_valley_channelling → Valley channelling: wind funnelled through valleys; stronger at ridge; wind-hold risk; explain briefly.
+Do not state the absence of these (e.g. do not say "There is no inversion", "no Chinook expected", "no orographic lift", or "no valley channelling"). Only mention them when their flag is true; speak about them positively when they are happening.
+
+Output: Reply with exactly one JSON object, no markdown or extra text.
+{
+  "summary": "The technical brief in exactly 4 to 6 sentences. Use the payload fields above. Include: Pika new snow (value + time if snow_report_observed_at). Next 12h snow/wind from forecast_12h_* when present. Freezing level when freezing_level_m present. Call out inversion, Chinook, orographic, valley channelling by name only when their flags are true; do not mention them when false. Wind and best skiing from wind direction. 4–6 sentences only.",
+  "stash_name": "Optional. Omit for 4am report.",
+  "stash_note": "Optional. Omit for 4am report.",
+  "groomer_pick": "Optional. Omit for 4am report."
+}
+
+Rules:
+- Exactly 4 to 6 sentences. Technical but easy to understand.
+- Use only data from the payload; do not invent numbers. When a field is null or missing, omit or say "not available".
+- Do not state that inversion, Chinook, orographic lift, or valley channelling are absent or not expected. Only mention them when they are active (flags true); then speak about them positively.
+- Goal: Snow Reporters get a precise, educational brief that correctly reflects model and sensor data.
+
+Output only valid JSON.`;
+
+/**
+ * Resolve the system prompt: env string > file path > default. For reportType "4am" uses 4am-specific env/file/default.
+ */
+export function getSystemPrompt(reportType: ReportType = "6am"): string {
+  if (reportType === "4am") {
+    if (OPENROUTER_SYSTEM_PROMPT_4AM_ENV.length > 0) return OPENROUTER_SYSTEM_PROMPT_4AM_ENV;
+    if (OPENROUTER_SYSTEM_PROMPT_FILE_4AM.length > 0) {
+      const path = OPENROUTER_SYSTEM_PROMPT_FILE_4AM.startsWith("/")
+        ? OPENROUTER_SYSTEM_PROMPT_FILE_4AM
+        : join(process.cwd(), OPENROUTER_SYSTEM_PROMPT_FILE_4AM);
+      if (existsSync(path)) {
+        try {
+          return readFileSync(path, "utf-8").trim();
+        } catch (e) {
+          console.warn("OpenRouter: failed to read 4am system prompt file:", e);
+        }
+      }
+    }
+    return DEFAULT_SYSTEM_PROMPT_4AM;
+  }
+  if (OPENROUTER_SYSTEM_PROMPT_ENV.length > 0) {
+    return OPENROUTER_SYSTEM_PROMPT_ENV;
+  }
+  if (OPENROUTER_SYSTEM_PROMPT_FILE.length > 0) {
+    const path = OPENROUTER_SYSTEM_PROMPT_FILE.startsWith("/")
+      ? OPENROUTER_SYSTEM_PROMPT_FILE
+      : join(process.cwd(), OPENROUTER_SYSTEM_PROMPT_FILE);
+    if (existsSync(path)) {
+      try {
+        return readFileSync(path, "utf-8").trim();
+      } catch (e) {
+        console.warn("OpenRouter: failed to read system prompt file:", e);
+      }
+    }
+  }
+  return DEFAULT_SYSTEM_PROMPT;
+}
+
+export interface ForecastPayload {
+  summit_temp_c?: number | null;
+  base_temp_c?: number | null;
+  summit_wind_kmh?: number | null;
+  base_wind_kmh?: number | null;
+  summit_wind_dir_deg?: number | null;
+  base_wind_dir_deg?: number | null;
+  inversion_active?: boolean;
+  snow_24h_cm?: number | null;
+  snow_overnight_cm?: number | null;
+  open_lifts?: string[];
+  groomed_runs?: string[];
+  history_alert?: string | null;
+  /** 4am report: when the snow report (Pika) was last updated (e.g. "04:00" or ISO). */
+  snow_report_observed_at?: string | null;
+  /** 4am report: HRDPS/RDPS precip (mm liquid) next 12h — sum of 0–12h leads. */
+  forecast_12h_precip_mm?: number | null;
+  /** 4am report: model wind (km/h) and dir (deg) for ~6–12h. */
+  forecast_12h_wind_kmh?: number | null;
+  forecast_12h_wind_dir_deg?: number | null;
+  /** 4am report: model base/summit temp (°C) for ~6–12h. */
+  forecast_12h_temp_base_c?: number | null;
+  forecast_12h_temp_summit_c?: number | null;
+  /** 4am report: freezing level (m ASL or hPa — see payload source). Null if not available. */
+  freezing_level_m?: number | null;
+  /** 4am report: explicit physics flags so model can call out scientific happenings. */
+  physics_orographic?: boolean;
+  physics_chinook?: boolean;
+  physics_valley_channelling?: boolean;
+  [key: string]: unknown;
+}
+
+export interface ForecastResult {
+  summary: string;
+  stash_name?: string | null;
+  stash_note?: string | null;
+  groomer_pick?: string | null;
+}
+
+/**
+ * Call OpenRouter chat/completions; parse response as ForecastResult.
+ * reportType "4am" uses the technical (Snow Reporters) system prompt; "6am" uses the public prompt.
+ * Returns null if disabled (no API key), request fails, or response is not valid JSON.
+ */
+export async function generateForecast(
+  payload: ForecastPayload,
+  reportType: ReportType = "6am"
+): Promise<ForecastResult | null> {
+  if (!OPENROUTER_API_KEY) {
+    console.warn("OpenRouter: OPENROUTER_API_KEY not set, skipping.");
+    return null;
+  }
+  const systemPrompt = getSystemPrompt(reportType);
+  const userContent =
+    typeof payload === "string" ? payload : JSON.stringify(payload, null, 0);
+  console.log("OpenRouter: reportType=" + reportType + " model=" + OPENROUTER_MODEL + " payload keys=" + Object.keys(payload).join(","));
+
+  try {
+    const res = await axios.post<{
+      choices?: Array<{ message?: { content?: string } }>;
+    }>(
+      `${OPENROUTER_BASE}/chat/completions`,
+      {
+        model: OPENROUTER_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+        max_tokens: 512,
+        temperature: 0.3,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://lakeloui.se",
+        },
+        timeout: 30_000,
+      }
+    );
+
+    const raw =
+      res.data?.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!raw) {
+      console.warn("OpenRouter: empty response content. choices=", JSON.stringify(res.data?.choices).slice(0, 200));
+      return null;
+    }
+    console.log("OpenRouter: raw response length=", raw.length, "preview=", raw.slice(0, 120) + (raw.length > 120 ? "..." : ""));
+
+    // Strip optional markdown code fence
+    let jsonStr = raw;
+    const codeMatch = raw.match(/^```(?:json)?\s*([\s\S]*?)```$/m);
+    if (codeMatch) jsonStr = codeMatch[1].trim();
+
+    const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+    const summary = typeof parsed.summary === "string" ? parsed.summary : "";
+    if (!summary) {
+      console.warn("OpenRouter: parsed JSON missing or empty summary. keys=", Object.keys(parsed).join(","));
+      return null;
+    }
+
+    return {
+      summary,
+      stash_name:
+        typeof parsed.stash_name === "string" ? parsed.stash_name : null,
+      stash_note:
+        typeof parsed.stash_note === "string" ? parsed.stash_note : null,
+      groomer_pick:
+        typeof parsed.groomer_pick === "string" ? parsed.groomer_pick : null,
+    };
+  } catch (err: unknown) {
+    const ax = err as { response?: { status?: number; data?: unknown }; message?: string };
+    console.error("OpenRouter forecast generation failed:", ax?.message ?? err);
+    if (ax?.response) {
+      console.error("OpenRouter response status:", ax.response.status, "data:", JSON.stringify(ax.response.data).slice(0, 400));
+    }
+    return null;
+  }
+}

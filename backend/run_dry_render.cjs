@@ -5,19 +5,35 @@ const backendDir = __dirname;
 
 const fs = require('fs');
 
-// Load .env from backend dir so WEATHERLINK_API_* are set for station readings (optional).
-const envPath = path.join(__dirname, '.env');
-if (fs.existsSync(envPath)) {
-  const content = fs.readFileSync(envPath, 'utf8');
-  for (const line of content.split('\n')) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+// Load .env from backend dir (WEATHERLINK_API_*, OPENROUTER_API_KEY, etc.; optional).
+function loadEnv(filePath) {
+  if (!fs.existsSync(filePath)) return 0;
+  const content = fs.readFileSync(filePath, 'utf8');
+  let count = 0;
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const stripped = trimmed.replace(/^\s*export\s+/, '');
+    const m = stripped.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (m && process.env[m[1]] === undefined) {
+      process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+      count++;
+    }
   }
+  return count;
+}
+const envPath = path.join(__dirname, '.env');
+const envPathCwd = path.join(process.cwd(), '.env');
+const loaded = loadEnv(envPath) || loadEnv(envPathCwd);
+if (loaded > 0) {
+  console.log('Loaded .env (', loaded, 'vars). OPENROUTER_API_KEY set:', !!process.env.OPENROUTER_API_KEY);
+} else {
+  console.log('No .env found at', envPath, 'or', envPathCwd, '— OPENROUTER_API_KEY will be unset unless in shell.');
 }
 
 const CACHE_FILE = path.join(__dirname, 'fixtures', 'dry-run-cache.json');
-// Bump when extraction/code changes so old forecast cache is not reused (NOAA NAM/GFS).
-const CACHE_VERSION = 11;
+// Bump when extraction/code changes so old forecast cache is not reused (GeoMet HRDPS/RDPS precip/wind).
+const CACHE_VERSION = 15;
 // Use cached data when fresh. Set FORCE_FETCH=1 only when you need to refresh (e.g. after 5h); otherwise we do not redownload models.
 const FORCE_FETCH = process.env.FORCE_FETCH === '1' || process.env.FORCE_FETCH === 'true';
 
@@ -54,6 +70,9 @@ const pikaSkoki = require('./dist/pikaSkoki.cjs');
 const town = require('./dist/townsite.cjs');
 const resort = require('./dist/resortXml.cjs');
 const render = require('./dist/renderHtml.cjs');
+const openRouter = require('./dist/openRouter.cjs');
+const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+const { makeEmailSafe } = require('./dist/emailHtml.cjs');
 
 (async () => {
   try {
@@ -214,17 +233,135 @@ const render = require('./dist/renderHtml.cjs');
       weatherForRender = [];
     }
 
+    const barHigh = weatherForRender.some((w) => w.bar_sea_level != null && w.bar_sea_level > 1018);
+    const pikaSnowReport = resortData ? resort.getPikaSnowReport(resortData) : null;
+    const heavySnow = pikaSnowReport != null && pikaSnowReport.snow24Hours >= 15;
+
+    function is4amReport() {
+      if (process.env.REPORT_TYPE === '4am') return true;
+      const mst = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Edmonton' }));
+      return mst.getHours() === 4;
+    }
+    const use4amReport = is4amReport();
+    let aiScript = 'Dry run render';
+    let stashName = 'THE HORSESHOE';
+    let stashWhy = 'Dry run render';
+    let stashCardLabel = 'STASH FINDER';
+    if (process.env.OPENROUTER_API_KEY) {
+      console.log('OpenRouter: API key present, reportType=' + (use4amReport ? '4am' : '6am') + ', calling generateForecast...');
+      const payload = {
+        summit_temp_c: weatherForRender[0]?.temp ?? null,
+        base_temp_c: weatherForRender[1]?.temp ?? null,
+        summit_wind_kmh: weatherForRender[0]?.wind_speed ?? null,
+        base_wind_kmh: weatherForRender[1]?.wind_speed ?? null,
+        summit_wind_dir_deg: weatherForRender[0]?.wind_direction_deg ?? null,
+        base_wind_dir_deg: weatherForRender[1]?.wind_direction_deg ?? null,
+        inversion_active: barHigh,
+        snow_24h_cm: pikaSnowReport?.snow24Hours ?? null,
+        snow_overnight_cm: pikaSnowReport?.snowOverNight ?? null,
+        open_lifts: [],
+        groomed_runs: [],
+        history_alert: null
+      };
+      if (resortData?.report?.facilities?.areas?.area) {
+        const areas = resortData.report.facilities.areas.area;
+        const openLifts = [];
+        const groomedRuns = [];
+        for (const area of areas) {
+          for (const lift of area.lifts?.lift ?? []) {
+            if (lift?.status === 'Open' && lift?.name) openLifts.push(String(lift.name));
+          }
+          for (const trail of area.trails?.trail ?? []) {
+            if (trail?.status === 'Open' && String(trail?.groomed ?? '').toLowerCase() === 'yes' && trail?.name) {
+              groomedRuns.push(String(trail.name));
+            }
+          }
+        }
+        payload.open_lifts = openLifts;
+        payload.groomed_runs = groomedRuns;
+      }
+      // 4am report: add 12h forecast, freezing level, Pika time, physics flags (same as handler)
+      payload.snow_report_observed_at = pikaSnowReport?.lastSnowfallUpdate ?? pikaSnowReport?.lastSnowfallDate ?? null;
+      const hrdps12 = (detailedForecast && detailedForecast.hrdps) || forecastTimeline || [];
+      const hrdpsPeriods = hrdps12.filter(
+        (p) => p.leadHours <= 12 && (p.source === 'HRDPS' || !(detailedForecast && detailedForecast.hrdps && detailedForecast.hrdps.length))
+      );
+      const period12 = hrdpsPeriods.find((p) => p.leadHours === 12) ?? hrdpsPeriods.find((p) => p.leadHours === 6);
+      let forecast12hPrecipMm = null;
+      if (hrdpsPeriods.length > 0) {
+        const sum = hrdpsPeriods.reduce((acc, p) => acc + (p.precipMm ?? 0), 0);
+        forecast12hPrecipMm = sum > 0 ? sum : null;
+      }
+      payload.forecast_12h_precip_mm = forecast12hPrecipMm ?? null;
+      payload.forecast_12h_wind_kmh = period12?.windSpeed ?? null;
+      payload.forecast_12h_wind_dir_deg = period12?.windDir ?? null;
+      payload.forecast_12h_temp_base_c = period12?.tempBase ?? null;
+      payload.forecast_12h_temp_summit_c = period12?.tempSummit ?? null;
+      const vp = detailedForecast?.verticalProfile ?? [];
+      let freezingLevel = null;
+      if (vp.length >= 2) {
+        const sorted = [...vp].sort((a, b) => a.level - b.level);
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const a = sorted[i];
+          const b = sorted[i + 1];
+          if ((a.temp <= 0 && b.temp >= 0) || (a.temp >= 0 && b.temp <= 0)) {
+            const t = (0 - a.temp) / (b.temp - a.temp);
+            freezingLevel = Math.round(a.level + t * (b.level - a.level));
+            break;
+          }
+        }
+      }
+      payload.freezing_level_m = freezingLevel;
+      const baseTemp = weatherForRender[1]?.temp;
+      const summitTemp = weatherForRender[0]?.temp;
+      const sumWind = weatherForRender[0]?.wind_speed;
+      const baseWind = weatherForRender[1]?.wind_speed;
+      const sumDir = weatherForRender[0]?.wind_direction_deg;
+      const isWesterly = (deg) => deg >= 180 && deg <= 360;
+      const isWSW = (deg) => deg >= 225 && deg <= 315;
+      payload.physics_chinook = baseTemp != null && summitTemp != null && baseTemp > summitTemp && sumDir != null && isWSW(sumDir);
+      payload.physics_orographic = sumDir != null && isWesterly(sumDir) && (forecast12hPrecipMm ?? 0) > 0;
+      payload.physics_valley_channelling = (sumWind != null && baseWind != null && sumWind - baseWind > 15) || (sumWind != null && sumWind > 40);
+
+      try {
+        const reportType = use4amReport ? '4am' : '6am';
+        const result = await openRouter.generateForecast(payload, reportType);
+        if (result) {
+          if (use4amReport) {
+            stashCardLabel = '04:00 REPORT';
+            stashName = '04:00 REPORT';
+            stashWhy = result.summary;
+            aiScript = "Technical brief for Snow Reporters in the 04:00 card below.";
+            console.log('OpenRouter 4am report generated. stashWhy length:', (result.summary || '').length);
+          } else {
+            aiScript = result.summary;
+            if (result.stash_name) stashName = result.stash_name;
+            if (result.stash_note) stashWhy = result.stash_note;
+            console.log('OpenRouter forecast generated. summary:', (result.summary || '').slice(0, 80) + (result.summary && result.summary.length > 80 ? '...' : ''));
+          }
+        } else {
+          console.log('OpenRouter: generateForecast returned null (check openRouter logs above).');
+        }
+      } catch (e) {
+        console.warn('OpenRouter forecast failed, using placeholder:', e.message);
+        if (e.response) console.warn('OpenRouter response status:', e.response.status, 'data:', JSON.stringify(e.response.data).slice(0, 200));
+      }
+    } else {
+      console.log('OpenRouter: OPENROUTER_API_KEY not set, using placeholder hero/stash.');
+    }
+
     const renderData = {
       weather: weatherForRender,
       forecastTimeline,
       detailedForecast: detailedForecast ?? undefined,
-      aiScript: 'Dry run render',
-      stashName: 'THE HORSESHOE',
-      stashWhy: 'Dry run render',
-      inversionActive: false,
-      heavySnow: false,
-      snowReport: null,
-      snowReportUpdatedAt: undefined,
+      aiScript,
+      stashName,
+      stashWhy,
+      stashCardLabel,
+      inversionActive: barHigh,
+      heavySnow,
+      snowReport: pikaSnowReport ?? null,
+      snowReportUpdatedAt: pikaSnowReport ? new Date().toISOString() : undefined,
       goesStations: { pika: pikaData ?? undefined, skoki: skokiData ?? undefined },
       waterOffice: waterData.length > 0 ? waterData : undefined,
       sparklineSummit: undefined,
@@ -235,6 +372,33 @@ const render = require('./dist/renderHtml.cjs');
     fs.writeFileSync('/tmp/lakeloui_live_dry_index.html', html, 'utf8');
     fs.writeFileSync('/tmp/lakeloui_test_index.html', html, 'utf8');
     console.log('WROTE /tmp/lakeloui_live_dry_index.html and /tmp/lakeloui_test_index.html');
+
+    // 4am report email: send when REPORT_TYPE=4am and REPORT_4AM_EMAIL + SES_FROM_EMAIL set (e.g. in .env)
+    const reportType = process.env.REPORT_TYPE || '';
+    const report4amEmail = (process.env.REPORT_4AM_EMAIL || '').trim();
+    const sesFromEmail = (process.env.SES_FROM_EMAIL || '').trim();
+    if (reportType === '4am') {
+      if (report4amEmail && sesFromEmail) {
+        try {
+          const ses = new SESClient({ region: 'us-east-1' });
+          const subject = 'Lake Louise 04:00 Report — ' + new Date().toLocaleDateString('en-CA', { timeZone: 'America/Edmonton', year: 'numeric', month: 'short', day: 'numeric' });
+          const emailHtml = makeEmailSafe(html);
+          await ses.send(new SendEmailCommand({
+            Source: sesFromEmail,
+            Destination: { ToAddresses: [report4amEmail] },
+            Message: {
+              Subject: { Data: subject, Charset: 'UTF-8' },
+              Body: { Html: { Data: emailHtml, Charset: 'UTF-8' } }
+            }
+          }));
+          console.log('4am report email sent to', report4amEmail);
+        } catch (err) {
+          console.error('Failed to send 4am report email:', err.message || err);
+        }
+      } else {
+        console.log('4am report: email skipped (set REPORT_4AM_EMAIL and SES_FROM_EMAIL in .env to send).');
+      }
+    }
 
     // Write cache: per-source timestamps (and resortHash for change detection).
     const now = new Date().toISOString();

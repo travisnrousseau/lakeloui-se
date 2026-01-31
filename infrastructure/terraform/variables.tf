@@ -61,3 +61,18 @@ variable "route53_zone_id" {
   type        = string
   default     = ""
 }
+
+# 4am report email — full index.html (including AI summary) sent when 4am MST report runs (SES).
+variable "report_4am_email" {
+  description = "Email address to receive the 4am Snow Reporters report (full index HTML). Leave empty to disable."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "ses_from_email" {
+  description = "SES verified sender address (From) for 4am report emails (e.g. WorkMail-hosted info@rousseau.tv)."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

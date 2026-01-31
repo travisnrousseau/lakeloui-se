@@ -135,15 +135,21 @@ export const COVERAGE_IDS = {
   HRDPS_PRECIP: "HRDPS-WEonG_2.5km_TotalPrecipitation",
   /** Fallback: doc says HRDPS.CONTINENTAL_APCP; WCS-style name may not be in WMS in some regions. */
   HRDPS_PRECIP_ALT: "HRDPS.CONTINENTAL_APCP",
-  HRDPS_WIND_SPEED: "HRDPS-WEonG_2.5km_WindSpeed_10m",
-  HRDPS_WIND_DIR: "HRDPS-WEonG_2.5km_WindDirection_10m",
+  HRDPS_WIND_SPEED: "HRDPS-WEonG_2.5km_WindSpeed",
+  HRDPS_WIND_DIR: "HRDPS-WEonG_2.5km_WindDir",
   RDPS_2M_TEMP: "RDPS.ETA_TT",
   RDPS_PRECIP: "RDPS.ETA_PR",
   RDPS_PBL_HEIGHT: "RDPS_10km_PlanetaryBoundaryLayerHeight",
   RDPS_WIND_SPEED: "RDPS_10km_WindSpeed_10m",
-  RDPS_WIND_DIR: "RDPS_10km_WindDirection_10m",
+  RDPS_WIND_DIR: "RDPS_10km_WindDir_10m",
+  RDPS_WIND_SPEED_80M: "RDPS_10km_WindSpeed_80m",
+  RDPS_WIND_DIR_80M: "RDPS_10km_WindDir_80m",
   GDPS_2M_TEMP_15KM: "GDPS_15km_AirTemp_2m",
   GDPS_2M_TEMP_25KM: "GDPS-GEML_25km_AirTemp_2m",
+  /** 3h accumulation (mm liquid) at valid time; no TotalPrecipitation layer in GeoMet for 15km. */
+  GDPS_PRECIP: "GDPS_15km_Precip-Accum3h",
+  /** Single combined layer; GetFeatureInfo may return speed (and dir in another band). */
+  GDPS_WINDS_10M: "GDPS_15km_Winds_10m",
 } as const;
 
 /** Half-width in degrees for point subset (small bbox around lat/lon). */
@@ -203,6 +209,54 @@ async function fetchWmsPointValue(
       console.warn("GeoMet WMS GetFeatureInfo error:", e);
     }
     return null;
+  }
+}
+
+/**
+ * WMS GetFeatureInfo returning all numeric property values (for multi-band layers e.g. GDPS Winds_10m).
+ * Order may be band1, band2 or key order; caller uses first as speed, second as dir if present.
+ */
+async function fetchWmsPointValues(
+  layerName: string,
+  lat: number,
+  lon: number,
+  time?: string
+): Promise<number[]> {
+  const { i, j } = wmsPixelFromLatLon(lat, lon);
+  const url = new URL(GEOMET_BASE);
+  url.searchParams.set("SERVICE", "WMS");
+  url.searchParams.set("VERSION", "1.3.0");
+  url.searchParams.set("REQUEST", "GetFeatureInfo");
+  url.searchParams.set("LAYERS", layerName);
+  url.searchParams.set("QUERY_LAYERS", layerName);
+  url.searchParams.set("BBOX", WMS_BBOX_STR);
+  if (time) url.searchParams.set("TIME", time);
+  url.searchParams.set("FEATURE_COUNT", "1");
+  url.searchParams.set("I", String(i));
+  url.searchParams.set("J", String(j));
+  url.searchParams.set("WIDTH", String(WMS_SIZE));
+  url.searchParams.set("HEIGHT", String(WMS_SIZE));
+  url.searchParams.set("INFO_FORMAT", "application/json");
+  url.searchParams.set("CRS", "EPSG:4326");
+  try {
+    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return [];
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("json")) return [];
+    const data = (await res.json()) as Record<string, unknown>;
+    const features = data?.features as Array<{ properties?: Record<string, unknown> }> | undefined;
+    const props = features?.[0]?.properties;
+    if (!props || typeof props !== "object") return [];
+    const values: number[] = [];
+    for (const v of Object.values(props)) {
+      if (typeof v === "number" && Number.isFinite(v)) values.push(v);
+    }
+    return values;
+  } catch (e) {
+    if (process.env.DEBUG_GEOMET) {
+      console.warn("GeoMet WMS GetFeatureInfo (multi) error:", e);
+    }
+    return [];
   }
 }
 
@@ -398,6 +452,40 @@ export async function getGdpsTemp2m(
 }
 
 /**
+ * Fetch GDPS precipitation at a point (mm liquid). Layer GDPS_15km_Precip-Accum3h (3h accumulation).
+ * time: optional ISO8601 valid time for forecast hour.
+ */
+export async function getGdpsPrecipMm(
+  lat: number,
+  lon: number,
+  time?: string
+): Promise<number | null> {
+  const val = await getPointValue(COVERAGE_IDS.GDPS_PRECIP, lat, lon, time);
+  if (val == null || !Number.isFinite(val) || val < 0) return null;
+  return val;
+}
+
+/**
+ * Fetch GDPS 10 m wind at a point (speed km/h, direction degrees 0–360).
+ * Uses single layer GDPS_15km_Winds_10m; GeoMet may return [speed, dir] or one value (speed only).
+ * time: optional ISO8601 valid time for forecast hour.
+ * Returns null if no valid speed. Direction used as-is (no 180° correction).
+ */
+export async function getGdpsWind10m(
+  lat: number,
+  lon: number,
+  time?: string
+): Promise<{ speedKmh: number; dirDeg: number } | null> {
+  const values = await fetchWmsPointValues(COVERAGE_IDS.GDPS_WINDS_10M, lat, lon, time);
+  const speedVal = values[0];
+  if (speedVal == null || !Number.isFinite(speedVal) || speedVal < 0) return null;
+  const dirVal = values[1];
+  const dirDeg =
+    dirVal != null && Number.isFinite(dirVal) ? (((dirVal % 360) + 360) % 360) : 0;
+  return { speedKmh: windSpeedKmh(speedVal), dirDeg };
+}
+
+/**
  * Fetch HRDPS precipitation at a point (mm liquid). Tries HRDPS-WEonG_2.5km_TotalPrecipitation first,
  * then HRDPS.CONTINENTAL_APCP (doc fallback; WCS-style name may not be in WMS in some deployments).
  * time: optional ISO8601 valid time for forecast hour.
@@ -438,9 +526,10 @@ function windSpeedKmh(raw: number): number {
 }
 
 /**
- * Fetch HRDPS 10 m wind at a point (speed km/h, direction degrees 0–360).
+ * Fetch HRDPS 10 m wind at a point (speed km/h, direction degrees 0–360, meteorological "from").
  * time: optional ISO8601 valid time for forecast hour.
  * Returns null if either layer fails.
+ * GeoMet HRDPS WindDir is opposite to SpotWX; add 180° so display matches SpotWX.
  */
 export async function getHrdpsWind10m(
   lat: number,
@@ -453,7 +542,8 @@ export async function getHrdpsWind10m(
   ]);
   if (speedVal == null || !Number.isFinite(speedVal) || speedVal < 0) return null;
   if (dirVal == null || !Number.isFinite(dirVal)) return { speedKmh: windSpeedKmh(speedVal), dirDeg: 0 };
-  const dirDeg = ((dirVal % 360) + 360) % 360;
+  let dirDeg = ((dirVal % 360) + 360) % 360;
+  dirDeg = (dirDeg + 180) % 360;
   return { speedKmh: windSpeedKmh(speedVal), dirDeg };
 }
 
@@ -461,6 +551,7 @@ export async function getHrdpsWind10m(
  * Fetch RDPS 10 m wind at a point (speed km/h, direction degrees 0–360).
  * time: optional ISO8601 valid time for forecast hour.
  * Returns null if speed layer fails.
+ * GeoMet RDPS WindDir used as-is to match SpotWX (no 180° correction).
  */
 export async function getRdpsWind10m(
   lat: number,
@@ -470,6 +561,25 @@ export async function getRdpsWind10m(
   const [speedVal, dirVal] = await Promise.all([
     getPointValue(COVERAGE_IDS.RDPS_WIND_SPEED, lat, lon, time),
     getPointValue(COVERAGE_IDS.RDPS_WIND_DIR, lat, lon, time),
+  ]);
+  if (speedVal == null || !Number.isFinite(speedVal) || speedVal < 0) return null;
+  const dirDeg =
+    dirVal != null && Number.isFinite(dirVal) ? (((dirVal % 360) + 360) % 360) : 0;
+  return { speedKmh: windSpeedKmh(speedVal), dirDeg };
+}
+
+/**
+ * Fetch RDPS 80 m wind at a point (speed km/h, direction degrees 0–360).
+ * Use at summit for ridge-level wind. No 180° correction; use as-is to match SpotWX.
+ */
+export async function getRdpsWind80m(
+  lat: number,
+  lon: number,
+  time?: string
+): Promise<{ speedKmh: number; dirDeg: number } | null> {
+  const [speedVal, dirVal] = await Promise.all([
+    getPointValue(COVERAGE_IDS.RDPS_WIND_SPEED_80M, lat, lon, time),
+    getPointValue(COVERAGE_IDS.RDPS_WIND_DIR_80M, lat, lon, time),
   ]);
   if (speedVal == null || !Number.isFinite(speedVal) || speedVal < 0) return null;
   const dirDeg =

@@ -65,6 +65,11 @@ resource "aws_iam_role_policy" "orchestrator_extra" {
         Action   = "cloudfront:CreateInvalidation"
         Effect   = "Allow"
         Resource = aws_cloudfront_distribution.frontend.arn
+      },
+      {
+        Action   = "ses:SendEmail"
+        Effect   = "Allow"
+        Resource = "*"
       }
     ]
   })
@@ -93,6 +98,8 @@ resource "aws_lambda_function" "orchestrator" {
       WEATHERLINK_API_SECRET       = var.weatherlink_api_secret
       WEATHERLINK_STATION_ID       = var.weatherlink_station_id
       WEATHERLINK_STATION_ID_BASE  = var.weatherlink_station_id_base
+      REPORT_4AM_EMAIL             = var.report_4am_email
+      SES_FROM_EMAIL               = var.ses_from_email
     }
   }
 }

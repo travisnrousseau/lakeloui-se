@@ -2,7 +2,7 @@
  * Midnight Alpine HTML template for pre-rendering.
  * Inline CSS so Lambda output is self-contained (no asset dependency).
  * Placeholders: {{HERO_BEANS}}, {{SUMMIT_TEMP}}, {{BASE_TEMP}}, {{SUMMIT_FEELS_LIKE}}, {{BASE_FEELS_LIKE}},
- * {{BASE_CARD_CLASS}}, {{BODY_CLASS}}, {{TIME}}, {{STASH_NAME}}, {{STASH_WHY}}, {{SUMMIT_WIND}}, {{BASE_WIND}},
+ * {{BASE_CARD_CLASS}}, {{BODY_CLASS}}, {{TIME}}, {{STASH_CARD_LABEL}}, {{STASH_NAME}}, {{STASH_WHY}}, {{SUMMIT_WIND}}, {{BASE_WIND}},
  * {{SUMMIT_WIND_META}}, {{BASE_WIND_META}}, {{SPARKLINE_SUMMIT}}, {{SPARKLINE_BASE}}, {{SNOW_REPORT_CARD}}, {{FORECAST_CARD}}
  */
 export const HTML_TEMPLATE = `<!DOCTYPE html>
@@ -49,16 +49,12 @@ header{grid-column:span 2;display:flex;justify-content:space-between;align-items
 .heatmap-segment{flex:1;width:100%;}
 .cloud-ceiling{position:absolute;left:-8px;right:-8px;height:2px;background:var(--white);box-shadow:0 0 8px var(--white);z-index:10;}
 
-/* Confidence Band SVG */
-.forecast-viz{width:100%;height:120px;margin-top:var(--u2);}
+/* 48H forecast graph — height from inline style so SVG (180px) doesn’t overflow */
+.forecast-viz{width:100%;min-height:180px;}
 .confidence-area{fill:var(--cyan);opacity:0.15;}
 .tactical-line{fill:none;stroke:var(--white);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;}
 .forecast-axis{stroke:var(--gray);stroke-width:1;stroke-dasharray:4 4;opacity:0.3;}
 .forecast-label-text{fill:var(--gray);font-size:10px;font-variant:small-caps;}
-
-/* Clarity */
-.clarity-tag{position:absolute;top:var(--u);right:var(--u);font-size:0.75rem;font-weight:800;background:rgba(0,0,0,0.5);padding:2px 6px;border-radius:4px;z-index:10;}
-.clarity-alert{color:var(--orange);border:1px solid var(--orange);}
 
 footer{grid-column:span 2;display:flex;justify-content:space-between;align-items:flex-end;padding:var(--u8) 0 var(--u4);}
 .footer-links{display:flex;gap:var(--u3);}
@@ -77,7 +73,6 @@ footer{grid-column:span 2;display:flex;justify-content:space-between;align-items
 <div class="text-muted">AVALANCHE: ● | <span id="time">{{TIME}}</span></div>
 </header>
 <section class="card hero">
-{{CLARITY_TAG}}
 <p class="text-beans" id="hero-beans">{{HERO_BEANS}}</p>
 </section>
 <section class="card card-summit">
@@ -98,7 +93,7 @@ footer{grid-column:span 2;display:flex;justify-content:space-between;align-items
 <div class="sparkline"><svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="{{SPARKLINE_BASE}}"/></svg></div>
 </section>
 <section class="card card-intelligence">
-<div class="text-muted">STASH FINDER</div>
+<div class="text-muted">{{STASH_CARD_LABEL}}</div>
 <div class="text-beans" id="stash-name">{{STASH_NAME}}</div>
 <p id="stash-why">{{STASH_WHY}}</p>
 </section>

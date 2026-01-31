@@ -14,6 +14,7 @@
 - **Resolution:** 10 km (vs HRDPS 2.5 km).
 - **Range:** Out to 84 hours.
 - **Why for Lake Louise:** Better at large moisture plumes (atmospheric rivers) off the Pacific.
+- **Temperature:** We query **base** and **summit** grid cells separately (`RDPS.ETA_TT` at BASE lat/lon and Paradise lat/lon) and use the two 2 m temps directly (no lapse correction). A single point at base + lapse from a fixed 2071 m reference was wrong: the 10 km cell at base often represents valley/warmer air, so RDPS row was showing positive temps when they should be negative; using the summit cell gives a colder, mountain-representative value.
 
 **Layer names** (prefix `RDPS.CONTINENTAL_`):
 
@@ -107,11 +108,14 @@ The app **tries WMS GetFeatureInfo** with the same layer names as WCS (e.g. `HRD
 |-------|-------------------------------------------|
 | HRDPS | `HRDPS-WEonG_2.5km_AirTemp`               |
 | HRDPS precip | `HRDPS-WEonG_2.5km_TotalPrecipitation` (mm liquid) |
-| HRDPS wind | `HRDPS-WEonG_2.5km_WindSpeed_10m`, `HRDPS-WEonG_2.5km_WindDirection_10m` (speed m/s→km/h, dir °) |
+| HRDPS wind | `HRDPS-WEonG_2.5km_WindSpeed`, `HRDPS-WEonG_2.5km_WindDir` (GetCapabilities: no _10m suffix; speed m/s→km/h, dir °). We add +180° to direction so display matches SpotWX (GeoMet raw is opposite). |
 | RDPS  | `RDPS.ETA_TT` (WMS; value at ~2071 m ref)  |
 | RDPS precip | `RDPS.ETA_PR` (mm liquid) |
-| RDPS wind | `RDPS_10km_WindSpeed_10m`, `RDPS_10km_WindDirection_10m` |
+| RDPS wind (10 m) | `RDPS_10km_WindSpeed_10m`, `RDPS_10km_WindDir_10m` (GetCapabilities uses WindDir not WindDirection). Used as-is to match SpotWX (no 180° correction). |
+| RDPS wind (80 m, summit) | `RDPS_10km_WindSpeed_80m`, `RDPS_10km_WindDir_80m` — used for RDPS row at summit (ridge-level); fallback to 10 m at base if 80 m unavailable. As-is, no 180°. |
 | GDPS  | `GDPS_15km_AirTemp_2m` or `GDPS-GEML_25km_AirTemp_2m` |
+| GDPS precip | `GDPS_15km_Precip-Accum3h` (3h accumulation, mm liquid; no TotalPrecipitation layer in GeoMet for 15km). |
+| GDPS wind (10 m) | `GDPS_15km_Winds_10m` (single combined layer; GetFeatureInfo may return speed and direction as multiple bands). Used as-is (no 180° correction). |
 
 RDPS is fetched via WMS GetFeatureInfo with layer `RDPS.ETA_TT`; base/summit are lapse-corrected from 2071 m (see §5.3).
 
@@ -233,7 +237,7 @@ For the physics and rationale, see [MODELS_ROCKIES_OPERATIONS.md](MODELS_ROCKIES
 
 | Variable / Use | GRIB2 / Quantity | GeoMet layer (WCS-style or WMS) | Status |
 |----------------|------------------|---------------------------------|--------|
-| Total precip (mm liquid) | APCP | `HRDPS-WEonG_2.5km_TotalPrecipitation` (then fallback `HRDPS.CONTINENTAL_APCP`), `RDPS.ETA_PR` | **In use** — RDPS precip works; HRDPS precip layers often return XML error from GeoMet WMS (run `npm run check-geomet-precip` to verify). |
+| Total precip (mm liquid) | APCP | `HRDPS-WEonG_2.5km_TotalPrecipitation` (then fallback `HRDPS.CONTINENTAL_APCP`), `RDPS.ETA_PR`, `GDPS_15km_TotalPrecipitation` | **In use** — RDPS and GDPS precip; HRDPS precip layers often return XML error from GeoMet WMS (run `npm run check-geomet-precip` to verify). |
 | Precip type (rain vs snow) | PRTY | TBD (discover via GetCapabilities) | Roadmap |
 | Snow depth | SNOD | TBD | Roadmap |
 | Snowfall amount | ASNOW | TBD | Roadmap |

@@ -3,7 +3,7 @@
  */
 import { HTML_TEMPLATE, escapeHtml } from "./template.js";
 import { upperDepthCm, orographicMultiplier, depthCmFromSwe, ELEV_PIKA_M, ELEV_SUMMIT_M, ELEV_BASE_M } from "./snowMath.js";
-import type { ForecastPeriod, DetailedForecast } from "./mscModels.js";
+import type { ForecastPeriod, ForecastDay, DetailedForecast } from "./mscModels.js";
 import type { PikaStationData, SkokiStationData } from "./pikaSkoki.js";
 
 export interface SnowReportData {
@@ -36,6 +36,10 @@ export interface RenderData {
   detailedForecast?: {
     hrdps?: ForecastPeriod[];
     rdps?: ForecastPeriod[];
+    rdps7d?: ForecastPeriod[];
+    gdps7d?: ForecastPeriod[];
+    rdps7dDays?: ForecastDay[];
+    gdps7dDays?: ForecastDay[];
     gdpsTrend?: string;
     verticalProfile?: { level: number; temp: number }[];
     pm25?: number | null;
@@ -45,6 +49,8 @@ export interface RenderData {
   aiScript?: string;
   stashName?: string;
   stashWhy?: string;
+  /** Card label for stash area: "04:00 REPORT" (4am) or "STASH FINDER" (6am/public). */
+  stashCardLabel?: string;
   inversionActive?: boolean;
   heavySnow?: boolean;
   snowReport?: SnowReportData | null;
@@ -464,8 +470,8 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
   }).join("");
 
   return `
-    <div class="forecast-viz" style="margin:var(--u2) 0;padding:var(--u2) 0;background:linear-gradient(to bottom, rgba(0,212,255,0.06) 0%, transparent 50%, rgba(255,140,0,0.06) 100%);border-radius:12px;border:1px solid rgba(255,255,255,0.08);">
-      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-width:720px;height:180px;display:block;">
+    <div class="forecast-viz" style="display:block;min-height:220px;height:auto;margin:0 0 24px 0;padding:var(--u2) 0;background:linear-gradient(to bottom, rgba(0,212,255,0.06) 0%, transparent 50%, rgba(255,140,0,0.06) 100%);border-radius:12px;border:1px solid rgba(255,255,255,0.08);box-sizing:border-box;">
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" style="width:100%;max-width:720px;height:180px;display:block;vertical-align:top;">
         <line x1="${padding}" y1="${yZero}" x2="${width - padding}" y2="${yZero}" stroke="#fff" stroke-width="2" stroke-dasharray="6 4" opacity="0.9"/>
         <text x="${padding}" y="${yZero - 6}" font-size="12" font-weight="700" fill="#fff">0°C</text>
         ${tempPaths}
@@ -475,8 +481,96 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
     </div>`;
 }
 
-/** Default leads when data has none (fallback). */
-const DEFAULT_FORECAST_LEADS = [0, 3, 6, 12, 18, 24, 36, 48];
+/** Default leads when data has none (fallback). Last column 42h → Sun ~08:46. */
+const DEFAULT_FORECAST_LEADS = [0, 3, 6, 12, 18, 24, 36, 42];
+
+/** 7-day table column leads (one per day). */
+const SEVEN_DAY_LEADS = [24, 48, 72, 96, 120, 144, 168];
+
+/** Render Next 7 days table with daily low/high for base and summit. */
+function renderForecast7DayTable(
+  rdps7dDays: ForecastDay[],
+  gdps7dDays: ForecastDay[]
+): string {
+  const getDay = (arr: ForecastDay[], lead: number) => arr.find((d) => d.leadHours === lead) ?? null;
+
+  const precipDisplay = (
+    mm: number | null | undefined,
+    baseTemp: number | null | undefined
+  ) => {
+    if (mm == null || !Number.isFinite(mm) || mm <= 0) return "—";
+    if (!Number.isFinite(baseTemp ?? NaN)) return `${Math.round(mm)} mm (precip)`;
+    if ((baseTemp ?? 0) > 1) return `${Math.round(mm)} mm rain`;
+    if ((baseTemp ?? 0) >= 0 && (baseTemp ?? 0) <= 1) return `${Math.round(mm)} mm mix`;
+    let ratio = 10;
+    if ((baseTemp ?? 0) <= -10) ratio = 20;
+    else if ((baseTemp ?? 0) <= -5) ratio = 15;
+    else if ((baseTemp ?? 0) <= -1) ratio = 12;
+    const snowCm = (mm / ratio) * 10;
+    return `${Math.round(snowCm)} cm snow`;
+  };
+
+  const cellForDay = (days: ForecastDay[], lead: number) => {
+    const d = getDay(days, lead);
+    if (!d) return `<div class="forecast-cell-empty">—</div>`;
+    const baseLow = d.tempBaseLow != null && Number.isFinite(d.tempBaseLow) ? Math.round(d.tempBaseLow) : null;
+    const baseHigh = d.tempBaseHigh != null && Number.isFinite(d.tempBaseHigh) ? Math.round(d.tempBaseHigh) : null;
+    const summitLow = d.tempSummitLow != null && Number.isFinite(d.tempSummitLow) ? Math.round(d.tempSummitLow) : null;
+    const summitHigh = d.tempSummitHigh != null && Number.isFinite(d.tempSummitHigh) ? Math.round(d.tempSummitHigh) : null;
+    const meanBase = baseLow != null && baseHigh != null ? (baseLow + baseHigh) / 2 : (baseLow ?? baseHigh ?? NaN);
+    const meanSummit = summitLow != null && summitHigh != null ? (summitLow + summitHigh) / 2 : (summitLow ?? summitHigh ?? NaN);
+    const meanTemp = Number.isFinite(meanBase) && Number.isFinite(meanSummit) ? (meanBase + meanSummit) / 2 : meanBase ?? meanSummit ?? NaN;
+    const inversion = baseHigh != null && summitLow != null && summitLow > baseHigh;
+    let bg = "#222";
+    if (Number.isFinite(meanTemp)) {
+      if (meanTemp <= -5) bg = "#073b4c";
+      else if (meanTemp <= 0) bg = "#0a5366";
+      else if (meanTemp <= 1) bg = "#2b2b2b";
+      else bg = "#6b3b00";
+    }
+    if (inversion) bg = "#3d2b1a";
+    const border = inversion ? "1px solid #ff5f00" : "1px solid transparent";
+    const baseStr = baseLow != null && baseHigh != null ? `${baseLow}° / ${baseHigh}°` : (baseLow != null || baseHigh != null ? `${baseLow ?? baseHigh}°` : "—");
+    const summitStr = summitLow != null && summitHigh != null ? `${summitLow}° / ${summitHigh}°` : (summitLow != null || summitHigh != null ? `${summitLow ?? summitHigh}°` : "—");
+    const precipStr = precipDisplay(d.precipMm ?? null, baseHigh ?? meanBase ?? null);
+    const windStr =
+      d.windSpeed != null && Number.isFinite(d.windSpeed)
+        ? `${Math.round(d.windSpeed)} km/h ${d.windDir != null && Number.isFinite(d.windDir) ? windDirFromDeg(d.windDir) : "—"}`
+        : "—";
+    return `<div class="forecast-cell" style="background:${bg};border:${border};padding:8px;border-radius:8px;color:#fff;text-align:center;min-width:64px;">
+              <div style="font-size:0.8rem;color:#ddd;">Base: ${baseStr}</div>
+              <div style="font-size:0.8rem;color:#ddd;margin-top:2px;">Summit: ${summitStr}</div>
+              <div style="font-size:0.75rem;color:#aaa;margin-top:4px;">${precipStr}</div>
+              <div style="font-size:0.75rem;color:#aaa;margin-top:2px;">${escapeHtml(windStr)}</div>
+            </div>`;
+  };
+
+  const headerCols = SEVEN_DAY_LEADS.map((l) => `<th style="padding:6px;text-align:center;"><div style="font-weight:700;">${formatLeadTimeShort(l)}</div><div style="font-size:0.75rem;color:var(--gray);font-weight:400;">${l}h</div></th>`).join("");
+  const col1 = SEVEN_DAY_LEADS.map((l) => `<td>${cellForDay(rdps7dDays, l)}</td>`).join("");
+  const col2 = SEVEN_DAY_LEADS.map((l) => `<td>${cellForDay(gdps7dDays, l)}</td>`).join("");
+
+  return `
+    <div class="forecast-bento" style="width:100%;display:block;overflow:visible;">
+      <div style="margin-top:0;display:block;">
+        <p style="margin:24px 0 12px 0;font-weight:700;font-size:1.1rem;">Next 7 days</p>
+        <div style="overflow-x:auto;margin-top:12px;-webkit-overflow-scrolling:touch;">
+          <table style="width:100%;min-width:560px;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:6px 8px;width:120px;min-width:80px;">Model</th>
+                ${headerCols}
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td style="padding:8px;font-weight:700;">RDPS</td>${col1}</tr>
+              <tr><td style="padding:8px;font-weight:700;">GDPS</td>${col2}</tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">Rain vs snow: from base temp. Orange border = inversion. RDPS · GDPS (7-day, daily low/high).</p>
+      </div>
+    </div>`;
+}
 
 /** Collect unique lead hours from period arrays, sorted (0, 3, 6, …). */
 function getLeadsFromData(arr1: ForecastPeriod[] | undefined, arr2: ForecastPeriod[] | undefined): number[] {
@@ -487,12 +581,13 @@ function getLeadsFromData(arr1: ForecastPeriod[] | undefined, arr2: ForecastPeri
   return leads.length > 0 ? leads : DEFAULT_FORECAST_LEADS;
 }
 
-/** Render the 48h forecast as a simple table: NAM/GFS or legacy HRDPS/RDPS. */
+/** Render the 48h forecast as a simple table: NAM/GFS or legacy HRDPS/RDPS. When tableOnly, no SVG or Next 24h (for 7-day RDPS/GDPS). */
 function renderForecastBento(
   arr1: ForecastPeriod[] | undefined,
   arr2: ForecastPeriod[] | undefined,
   label1: string = "HRDPS",
-  label2: string = "RDPS"
+  label2: string = "RDPS",
+  tableOnly: boolean = false
 ): string {
   const leads = getLeadsFromData(arr1, arr2);
   const leads24 = arr1?.some((p) => p.leadHours === 3) ? [3, 6, 9, 12, 15, 18, 21, 24] : [6, 12, 18, 24];
@@ -556,7 +651,9 @@ function renderForecastBento(
     }
     if (inversion) bg = "#3d2b1a";
     const border = inversion ? "1px solid #ff5f00" : "1px solid transparent";
-    const tempStr = base != null && summit != null ? `${summit}° / ${base}°` : summit != null ? `${summit}°` : base != null ? `${base}°` : "—";
+    const summitPart = summit != null ? `${summit}°` : "—";
+    const basePart = base != null ? `${base}°` : "—";
+    const tempStr = `${summitPart} / ${basePart}`;
     const precipMm = (p.precipMm != null && Number.isFinite(p.precipMm) && p.precipMm > 0)
       ? p.precipMm
       : (precipFallback ? getPeriod(precipFallback, lead)?.precipMm : null) ?? null;
@@ -585,39 +682,49 @@ function renderForecastBento(
   const col1 = leads.map(l => `<td>${cellFor(arr1, l, arr2)}</td>`).join("");
   const col2 = leads.map(l => `<td>${cellFor(arr2, l)}</td>`).join("");
 
-  const svgBlock = renderForecastSvg(arr1, arr2);
-
+  const svgBlock = tableOnly ? "" : renderForecastSvg(arr1, arr2);
   let next24RainMm = 0;
-  for (const lead of leads24) {
-    const h = getPeriod(arr1, lead);
-    const r = getPeriod(arr2, lead);
-    const mm = h?.precipMm ?? r?.precipMm ?? null;
-    const baseT = h?.tempBase ?? r?.tempBase ?? NaN;
-    if (mm != null && Number.isFinite(mm) && Number.isFinite(baseT) && baseT > 1) next24RainMm += mm;
+  if (!tableOnly) {
+    for (const lead of leads24) {
+      const h = getPeriod(arr1, lead);
+      const r = getPeriod(arr2, lead);
+      const mm = h?.precipMm ?? r?.precipMm ?? null;
+      const baseT = h?.tempBase ?? r?.tempBase ?? NaN;
+      if (mm != null && Number.isFinite(mm) && Number.isFinite(baseT) && baseT > 1) next24RainMm += mm;
+    }
   }
   const next24Line =
-    next24SnowCm > 0 || next24RainMm > 0
-      ? `<p style="margin-bottom:12px;font-weight:700;font-size:1rem;">Next 24h: ${next24SnowCm > 0 ? `~${Math.round(next24SnowCm)} cm snow` : ""}${next24SnowCm > 0 && next24RainMm > 0 ? "; " : ""}${next24RainMm > 0 ? `${Math.round(next24RainMm)} mm rain` : ""}</p>`
+    !tableOnly && (next24SnowCm > 0 || next24RainMm > 0)
+      ? `<p style="margin:0 0 12px 0;font-weight:700;font-size:1rem;">Next 24h: ${next24SnowCm > 0 ? `~${Math.round(next24SnowCm)} cm snow` : ""}${next24SnowCm > 0 && next24RainMm > 0 ? "; " : ""}${next24RainMm > 0 ? `${Math.round(next24RainMm)} mm rain` : ""}</p>`
       : "";
+  const precipBarsLine = tableOnly ? "" : "<p style=\"margin:0 0 16px 0;font-size:0.8rem;color:var(--gray);\">Precip bars: blue = snow, slate = rain.</p>";
+  const caption = tableOnly
+    ? "Rain vs snow: from base temp. Orange border = inversion. RDPS · GDPS (7-day)."
+    : "Rain vs snow: from base temp (cold = snow cm, warm = rain mm). Orange border = inversion. HRDPS row uses RDPS precip and wind when HRDPS layers unavailable. HRDPS · RDPS.";
+  const sectionTitle = tableOnly ? "<p style=\"margin:24px 0 12px 0;font-weight:700;font-size:1.1rem;\">Next 7 days</p>" : "";
   return `
-    <div class="forecast-bento" style="width:100%;">
+    <div class="forecast-bento" style="width:100%;display:block;overflow:visible;">
       ${svgBlock}
-    <div class="forecast-table" style="width:100%;margin-top:8px;">
-      ${next24Line}
-      <table style="width:100%;border-collapse:collapse;">
-        <thead>
-          <tr>
-            <th style="text-align:left;padding:6px;width:120px;">Model</th>
-            ${headerCols}
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td style="padding:8px;font-weight:700;">${label1}</td>${col1}</tr>
-          <tr><td style="padding:8px;font-weight:700;">${label2}</td>${col2}</tr>
-        </tbody>
-      </table>
-      <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">Rain vs snow: from base temp (cold = snow cm, warm = rain mm). Bar: blue = snow, slate = rain. Orange border = inversion. HRDPS row uses RDPS precip and wind when HRDPS layers unavailable. HRDPS · RDPS.</p>
-    </div>
+      ${precipBarsLine}
+      <div style="margin-top:0;display:block;">
+        ${sectionTitle}
+        ${next24Line}
+        <div style="overflow-x:auto;margin-top:12px;-webkit-overflow-scrolling:touch;">
+          <table style="width:100%;min-width:560px;border-collapse:collapse;">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:6px 8px;width:120px;min-width:80px;">Model</th>
+                ${headerCols}
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td style="padding:8px;font-weight:700;">${label1}</td>${col1}</tr>
+              <tr><td style="padding:8px;font-weight:700;">${label2}</td>${col2}</tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:10px;color:var(--gray);font-size:0.8rem;">${caption}</p>
+      </div>
     </div>
   `;
 }
@@ -628,14 +735,6 @@ export function renderHtml(data: RenderData): string {
   const baseCardClass = data.inversionActive ? "inversion-active" : "";
   const bodyClass = data.heavySnow ? "snow-overlay" : "";
   
-  // Clarity and Haze (FireWork PM2.5)
-  const pm25 = data.detailedForecast?.pm25 ?? 0;
-  const clarity = Math.max(0, Math.min(100, 100 - (pm25 * 2)));
-  const blurPx = Math.max(0, (pm25 - 10) / 5);
-  const desat = Math.max(0, pm25 / 2);
-  const bodyStyle = `backdrop-filter: blur(${blurPx}px) grayscale(${desat}%);`;
-  const clarityTag = `<div class="clarity-tag ${clarity < 50 ? 'clarity-alert' : ''}">CLARITY: ${Math.round(clarity)}%</div>`;
-
   const FEELS_LIKE_DIFF_C = 2;
   const summitTemp = summit?.temp != null ? `${Math.round(summit.temp)}°` : "--°";
   const baseTemp = base?.temp != null ? `${Math.round(base.temp)}°` : "--°";
@@ -660,8 +759,15 @@ export function renderHtml(data: RenderData): string {
   const baseWindMeta = base?.data_ts != null ? formatWindAsOf(base.data_ts) : "";
 
   const df = data.detailedForecast;
+  const has7dDays = df != null && (df.rdps7dDays?.length ?? 0) > 0 && (df.gdps7dDays?.length ?? 0) > 0;
+  const has7d = df != null && ((df.rdps7d?.length ?? 0) > 0 || (df.gdps7d?.length ?? 0) > 0);
+  const sevenDayBlock = has7dDays && df
+    ? renderForecast7DayTable(df.rdps7dDays!, df.gdps7dDays!)
+    : has7d && df
+      ? renderForecastBento(df.rdps7d, df.gdps7d, "RDPS", "GDPS", true)
+      : "<div class=\"forecast-bento\" style=\"width:100%;display:block;margin-top:24px;\"><p style=\"margin:0 0 12px 0;font-weight:700;font-size:1.1rem;\">Next 7 days</p><p style=\"color:var(--gray);font-size:0.9rem;\">RDPS · GDPS (7-day table refreshes with model data; run dry-render again if empty).</p></div>";
   const forecastBento = df
-    ? renderForecastBento(df.hrdps, df.rdps)
+    ? renderForecastBento(df.hrdps, df.rdps) + sevenDayBlock
     : '<p class="snow-conditions text-muted">Forecast will appear when model data is available.</p>';
 
   const verticalHeatmap = data.detailedForecast?.verticalProfile?.length
@@ -682,8 +788,9 @@ export function renderHtml(data: RenderData): string {
     "{{BASE_FEELS_LIKE}}": baseFeelsLike,
     "{{BASE_CARD_CLASS}}": baseCardClass,
     "{{BODY_CLASS}}": bodyClass,
-    "{{BODY_STYLE}}": bodyStyle,
+    "{{BODY_STYLE}}": "",
     "{{TIME}}": formatTimeMST(),
+    "{{STASH_CARD_LABEL}}": escapeHtml(data.stashCardLabel ?? "STASH FINDER"),
     "{{STASH_NAME}}": escapeHtml(data.stashName ?? "THE HORSESHOE"),
     "{{STASH_WHY}}": escapeHtml(data.stashWhy ?? "Check wind and aspect for the stash."),
     "{{SUMMIT_WIND}}": summitWind,
@@ -699,7 +806,6 @@ export function renderHtml(data: RenderData): string {
     "{{GDPS_TREND}}": escapeHtml(
       (data.detailedForecast?.gdpsTrend ?? "Data unavailable.").replace(/^(Extended|Long-range)\s*\(7-day\)\s*trend:\s*/i, "")
     ),
-    "{{CLARITY_TAG}}": clarityTag,
   };
 
   let html = HTML_TEMPLATE;

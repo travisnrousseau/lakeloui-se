@@ -43,10 +43,53 @@ This doc answers: **which LLM(s) to use for generating the ski-advice narrative*
 
 ---
 
+## OpenRouter (implementation)
+
+The backend uses **OpenRouter** so you can switch models and providers without changing code. See [openrouter.ai](https://openrouter.ai/docs).
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `OPENROUTER_API_KEY` | **Required** to call the LLM. If unset, the Lambda skips OpenRouter and uses the built‑in fallback narrative. |
+| `OPENROUTER_MODEL` | Model id (e.g. `google/gemini-2.0-flash-001`, `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku`). Default: `google/gemini-2.0-flash-001`. |
+| `OPENROUTER_SYSTEM_PROMPT` | Full system prompt string. If set, overrides file and built‑in default. Use for Lambda (env or Secrets Manager). |
+| `OPENROUTER_SYSTEM_PROMPT_FILE` | Path to a file containing the system prompt. Used when `OPENROUTER_SYSTEM_PROMPT` is not set. Useful for local dry‑render. |
+| `OPENROUTER_SYSTEM_PROMPT_4AM` | System prompt for the **4am (Snow Reporters)** report. Overrides file and built‑in 4am default when set. See [AI_WEATHER_OUTPUT](AI_WEATHER_OUTPUT.md) §1.1. |
+| `OPENROUTER_SYSTEM_PROMPT_FILE_4AM` | Path to file for 4am system prompt. Used when `OPENROUTER_SYSTEM_PROMPT_4AM` is not set. |
+| `REPORT_TYPE` | Set to `4am` to force the 4am (technical) report regardless of time. Used for dry‑render or override. Otherwise 4am is auto when current hour MST is 4. |
+
+### 4am report and STASH FINDER area
+
+When the run is **4am MST** (or `REPORT_TYPE=4am`), the backend uses the **4am (Snow Reporters)** system prompt and puts the **full technical brief** in the **STASH FINDER** card. The card label becomes **04:00 REPORT**; the hero shows a one‑line pointer. See [AI_WEATHER_OUTPUT](AI_WEATHER_OUTPUT.md) §1.1 and §4.
+
+### System prompt precedence
+
+1. **`OPENROUTER_SYSTEM_PROMPT`** (env) — use this to fully control the prompt (e.g. paste CONTENT_LOGIC + AI_WEATHER_OUTPUT rules).
+2. **`OPENROUTER_SYSTEM_PROMPT_FILE`** — path to a `.txt` or `.md` file; read at runtime. Relative paths are resolved from process cwd.
+3. **Built‑in default** — short instructions for JSON `{ summary, stash_name?, stash_note?, groomer_pick? }` and Mountain Guide tone.
+
+For **4am** runs, the same precedence applies using `OPENROUTER_SYSTEM_PROMPT_4AM` and `OPENROUTER_SYSTEM_PROMPT_FILE_4AM`; the built‑in 4am default is technical (Pika new snow, 12h forecast, wind + best skiing, physics terms explained).
+
+An example prompt file is in **`docs/prompts/forecast-system-example.txt`**. For local dry‑render: `OPENROUTER_SYSTEM_PROMPT_FILE=docs/prompts/forecast-system-example.txt` (path relative to cwd).
+
+### Changing the model
+
+Set `OPENROUTER_MODEL` to any [OpenRouter model id](https://openrouter.ai/docs#models), e.g.:
+
+- `google/gemini-2.0-flash-001` (default)
+- `openai/gpt-4o-mini`
+- `anthropic/claude-3.5-haiku`
+- `anthropic/claude-3.5-sonnet`
+
+No code change required.
+
+---
+
 ## Wiring (high level)
 
 1. Lambda computes alerts (inversion, orographic, Chinook, freezing level, stash, groomer, history_alert) and has resort XML summary.
 2. If Resort XML MD5 or snapshot hash unchanged → skip LLM; reuse last narrative from DynamoDB.
-3. Else: build a small JSON payload; call Gemini (or chosen model) with system prompt + payload; parse response; store narrative in `Live_Log` / `FRONTEND_META`; include in `index.html` (or `data.json`).
+3. Else: build a small JSON payload; call **OpenRouter** with `OPENROUTER_MODEL` and system prompt (env or file); parse response; use `summary` for hero, `stash_name`/`stash_note` for STASH FINDER; include in `index.html`.
 
 See ARCHITECTURE §2 (Logic Sequence) and PROJECT_STATUS §2 (Content logic & AI).

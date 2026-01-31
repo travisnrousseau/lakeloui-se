@@ -53,6 +53,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "archive" {
     id     = "glacier-after-180-days"
     status = "Enabled"
 
+    filter {} # apply to whole bucket (required by provider)
+
     transition {
       days          = 180
       storage_class = "GLACIER"

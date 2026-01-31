@@ -9,17 +9,32 @@ import { CloudFrontClient, CreateInvalidationCommand } from "@aws-sdk/client-clo
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import type { ForecastPeriod } from "./mscModels.js";
 import { fetchGeometForecastTimeline, fetchGeometDetailedForecast } from "./geometForecast.js";
 import { renderHtml, type RenderData } from "./renderHtml.js";
+import { makeEmailSafe } from "./emailHtml.js";
+import {
+  generateForecast,
+  type ForecastPayload,
+} from "./openRouter.js";
 
 /** Canadian models via GeoMet WCS (HRDPS, GDPS). Set GEOMET_ENABLED=1 to fetch. */
 const GEOMET_ENABLED = process.env.GEOMET_ENABLED === "1" || process.env.GEOMET_ENABLED === "true";
+
+/** True when this run is the 4am (Snow Reporters) report: REPORT_TYPE=4am or current hour MST is 4. */
+function is4amReport(): boolean {
+  if (process.env.REPORT_TYPE === "4am") return true;
+  const mst = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Edmonton" }));
+  return mst.getHours() === 4;
+}
 
 const ddbClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddbClient);
 const s3Client = new S3Client({});
 const cloudfrontClient = new CloudFrontClient({});
+/** SES identities (WorkMail, verified addresses) are per-region; use us-east-1 where they are verified. */
+const sesClient = new SESClient({ region: "us-east-1" });
 
 const LIVE_LOG_TABLE = process.env.LIVE_LOG_TABLE!;
 const FRONTEND_BUCKET = process.env.FRONTEND_BUCKET!;
@@ -133,6 +148,33 @@ async function publishHtml(html: string): Promise<void> {
       updatedAt: new Date().toISOString()
     }
   }));
+}
+
+const REPORT_4AM_EMAIL = process.env.REPORT_4AM_EMAIL?.trim() || "";
+const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL?.trim() || "";
+
+/**
+ * Send the full index HTML (including AI summary) to REPORT_4AM_EMAIL when 4am report runs.
+ * Requires REPORT_4AM_EMAIL and SES_FROM_EMAIL (verified in SES) to be set.
+ */
+async function send4amReportEmail(html: string): Promise<void> {
+  if (!REPORT_4AM_EMAIL || !SES_FROM_EMAIL) return;
+  const subject = `Lake Louise 04:00 Report — ${new Date().toLocaleDateString("en-CA", { timeZone: "America/Edmonton", year: "numeric", month: "short", day: "numeric" })}`;
+  try {
+    await sesClient.send(new SendEmailCommand({
+      Source: SES_FROM_EMAIL,
+      Destination: { ToAddresses: [REPORT_4AM_EMAIL] },
+      Message: {
+        Subject: { Data: subject, Charset: "UTF-8" },
+        Body: {
+          Html: { Data: html, Charset: "UTF-8" }
+        }
+      }
+    }));
+    console.log("4am report email sent to", REPORT_4AM_EMAIL);
+  } catch (err) {
+    console.error("Failed to send 4am report email:", err);
+  }
 }
 
 export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context: Context) => {
@@ -400,14 +442,109 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
     const barHigh = weatherForRender.some((w) => w.bar_sea_level != null && w.bar_sea_level > 1018);
     const inversionActive = barHigh;
 
-    // Current hero/stash text (AI-generated when shouldProcessAI, else fallback)
-    const aiScript = shouldProcessAI
-      ? "NW winds are loading the Horseshoe. Go deep in the A-I Gullies. It's an inversion day—stay high for the heat."
-      : "Conditions as last report. Next update when resort data changes.";
-    const stashName = "THE HORSESHOE";
-    const stashWhy = shouldProcessAI
-      ? "NW flow loading the gullies. High quality transport expected."
-      : "Check wind and aspect for the stash.";
+    // Forecast narrative: OpenRouter when shouldProcessAI and OPENROUTER_API_KEY set; else fallback
+    let aiScript = "Conditions as last report. Next update when resort data changes.";
+    let stashName = "THE HORSESHOE";
+    let stashWhy = "Check wind and aspect for the stash.";
+    const use4amReport = is4amReport();
+    let stashCardLabel: string = "STASH FINDER";
+
+    if (shouldProcessAI) {
+      const payload: ForecastPayload = {
+        summit_temp_c: weatherForRender[0]?.temp ?? null,
+        base_temp_c: weatherForRender[1]?.temp ?? null,
+        summit_wind_kmh: weatherForRender[0]?.wind_speed ?? null,
+        base_wind_kmh: weatherForRender[1]?.wind_speed ?? null,
+        summit_wind_dir_deg: weatherForRender[0]?.wind_direction_deg ?? null,
+        base_wind_dir_deg: weatherForRender[1]?.wind_direction_deg ?? null,
+        inversion_active: inversionActive,
+        snow_24h_cm: pikaSnowReport?.snow24Hours ?? null,
+        snow_overnight_cm: pikaSnowReport?.snowOverNight ?? null,
+        open_lifts: [],
+        groomed_runs: [],
+        history_alert: null,
+      };
+      if (resortData?.report?.facilities?.areas?.area) {
+        const areas = resortData.report.facilities.areas.area;
+        const openLifts: string[] = [];
+        const groomedRuns: string[] = [];
+        for (const area of areas) {
+          for (const lift of area.lifts?.lift ?? []) {
+            if (lift?.status === "Open" && lift?.name) openLifts.push(String(lift.name));
+          }
+          for (const trail of area.trails?.trail ?? []) {
+            if (trail?.status === "Open" && String(trail?.groomed ?? "").toLowerCase() === "yes" && trail?.name) {
+              groomedRuns.push(String(trail.name));
+            }
+          }
+        }
+        payload.open_lifts = openLifts;
+        payload.groomed_runs = groomedRuns;
+      }
+      // 4am report: add HRDPS/RDPS 12h forecast, freezing level, Pika time, and explicit physics flags
+      payload.snow_report_observed_at = pikaSnowReport?.lastSnowfallUpdate ?? pikaSnowReport?.lastSnowfallDate ?? null;
+      const hrdpsPeriods = (detailedForecast?.hrdps ?? forecastTimeline).filter(
+        (p) => p.leadHours <= 12 && (p.source === "HRDPS" || !detailedForecast?.hrdps?.length)
+      );
+      const period12 = hrdpsPeriods.find((p) => p.leadHours === 12) ?? hrdpsPeriods.find((p) => p.leadHours === 6);
+      let forecast12hPrecipMm: number | null = null;
+      if (hrdpsPeriods.length > 0) {
+        const sum = hrdpsPeriods.reduce((acc, p) => acc + (p.precipMm ?? 0), 0);
+        forecast12hPrecipMm = sum > 0 ? sum : null;
+      }
+      payload.forecast_12h_precip_mm = forecast12hPrecipMm ?? null;
+      payload.forecast_12h_wind_kmh = period12?.windSpeed ?? null;
+      payload.forecast_12h_wind_dir_deg = period12?.windDir ?? null;
+      payload.forecast_12h_temp_base_c = period12?.tempBase ?? null;
+      payload.forecast_12h_temp_summit_c = period12?.tempSummit ?? null;
+      const vp = detailedForecast?.verticalProfile ?? [];
+      let freezingLevel: number | null = null;
+      if (vp.length >= 2) {
+        const sorted = [...vp].sort((a, b) => a.level - b.level);
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const a = sorted[i];
+          const b = sorted[i + 1];
+          if ((a.temp <= 0 && b.temp >= 0) || (a.temp >= 0 && b.temp <= 0)) {
+            const t = (0 - a.temp) / (b.temp - a.temp);
+            freezingLevel = Math.round(a.level + t * (b.level - a.level));
+            break;
+          }
+        }
+      }
+      payload.freezing_level_m = freezingLevel;
+      const baseTemp = weatherForRender[1]?.temp;
+      const summitTemp = weatherForRender[0]?.temp;
+      const sumWind = weatherForRender[0]?.wind_speed;
+      const baseWind = weatherForRender[1]?.wind_speed;
+      const sumDir = weatherForRender[0]?.wind_direction_deg;
+      const isWesterly = (deg: number) => deg >= 180 && deg <= 360;
+      const isWSW = (deg: number) => deg >= 225 && deg <= 315;
+      payload.physics_chinook =
+        baseTemp != null && summitTemp != null && baseTemp > summitTemp && sumDir != null && isWSW(sumDir);
+      payload.physics_orographic =
+        sumDir != null && isWesterly(sumDir) && (forecast12hPrecipMm ?? 0) > 0;
+      payload.physics_valley_channelling =
+        (sumWind != null && baseWind != null && sumWind - baseWind > 15) || (sumWind != null && sumWind > 40);
+
+      const reportType = use4amReport ? "4am" : "6am";
+      const forecastResult = await generateForecast(payload, reportType);
+      if (forecastResult) {
+        if (use4amReport) {
+          // 4am: put full technical brief in STASH FINDER area (AI_WEATHER_OUTPUT §1.1)
+          stashCardLabel = "04:00 REPORT";
+          stashName = "04:00 REPORT";
+          stashWhy = forecastResult.summary;
+          aiScript = "Technical brief for Snow Reporters in the 04:00 card below.";
+        } else {
+          aiScript = forecastResult.summary;
+          if (forecastResult.stash_name) stashName = forecastResult.stash_name;
+          if (forecastResult.stash_note) stashWhy = forecastResult.stash_note;
+        }
+      } else {
+        aiScript = "NW winds are loading the Horseshoe. Go deep in the A-I Gullies. It's an inversion day—stay high for the heat.";
+        stashWhy = "NW flow loading the gullies. High quality transport expected.";
+      }
+    }
 
     const renderData: RenderData = {
       weather: weatherForRender,
@@ -416,6 +553,7 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       aiScript,
       stashName,
       stashWhy,
+      stashCardLabel,
       inversionActive,
       heavySnow,
       snowReport: pikaSnowReport ?? undefined,
@@ -423,7 +561,12 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       waterOffice: waterData.length > 0 ? waterData : undefined,
       goesStations: { pika: pikaData ?? undefined, skoki: skokiData ?? undefined }
     };
-    await publishHtml(renderHtml(renderData));
+    const html = renderHtml(renderData);
+    await publishHtml(html);
+
+    if (use4amReport) {
+      await send4amReportEmail(makeEmailSafe(html));
+    }
 
     // Explicit tracking when wind direction is not provided (vs. missing data). Persist for auditing.
     const weatherSummary = {
