@@ -162,4 +162,57 @@ The **STASH FINDER** card is an optional slice of the same report: where wind or
 
 ---
 
+## 7. Payload the AI gets (4am and 6am)
+
+The **same JSON payload** is sent to the AI for both 4am (Snow Reporters) and 6am (public) reports. The only difference is the **system prompt** (technical vs public) and how the **response** is used (4am: full technical brief in the 04:00 card; 6am: summary in hero + Stash Finder + groomer pick). Use this payload structure to build another morning prompt (e.g. a single “morning report in whole” suggestion).
+
+**Source:** `ForecastPayload` in `backend/src/openRouter.ts`; built in `backend/src/handler.ts` when `shouldProcessAI` is true.
+
+### 7.1 Shared fields (both 4am and 6am)
+
+| Field | Type | Source | Description |
+|-------|------|--------|-------------|
+| `summit_temp_c` | number \| null | WeatherLink Paradise | Current summit temp (°C). |
+| `base_temp_c` | number \| null | WeatherLink Base | Current base temp (°C). |
+| `summit_wind_kmh` | number \| null | WeatherLink Paradise | Summit wind speed (km/h). |
+| `base_wind_kmh` | number \| null | WeatherLink Base | Base wind speed (km/h). |
+| `summit_wind_dir_deg` | number \| null | WeatherLink Paradise | Summit wind direction 0–360 (met “from”). |
+| `base_wind_dir_deg` | number \| null | WeatherLink Base | Base wind direction 0–360. |
+| `inversion_active` | boolean | Bar > 1018 hPa and/or 850 vs 700 mb | True when inversion conditions present. |
+| `snow_24h_cm` | number \| null | Pika (resort XML / GOES) | Snow in last 24 h (cm). |
+| `snow_overnight_cm` | number \| null | Pika | Snow overnight (cm). |
+| `open_lifts` | string[] | Resort XML | Names of lifts currently open. |
+| `groomed_runs` | string[] | Resort XML | Names of open runs with groomed=yes. |
+| `history_alert` | string \| null | Optional | E.g. “On this day in 2019…” when provided. |
+
+### 7.2 4am-focused fields (technical brief)
+
+| Field | Type | Source | Description |
+|-------|------|--------|-------------|
+| `snow_report_observed_at` | string \| null | Pika `lastSnowfallUpdate` / `lastSnowfallDate` | When snow report was observed (e.g. "04:00" or ISO). |
+| `forecast_12h_precip_mm` | number \| null | HRDPS/RDPS 0–12 h sum | Precip (mm liquid) next 12 h. |
+| `forecast_12h_wind_kmh` | number \| null | HRDPS/RDPS 6h or 12h lead | Model wind speed (km/h) for ~6–12 h. |
+| `forecast_12h_wind_dir_deg` | number \| null | HRDPS/RDPS 6h or 12h lead | Model wind direction (deg) for ~6–12 h. |
+| `forecast_12h_temp_base_c` | number \| null | HRDPS/RDPS 6h or 12h lead | Model base temp (°C) for ~6–12 h. |
+| `forecast_12h_temp_summit_c` | number \| null | HRDPS/RDPS 6h or 12h lead | Model summit temp (°C) for ~6–12 h. |
+| `freezing_level_m` | number \| null | HRDPS vertical profile | Altitude (m ASL) where temp = 0°C. |
+| `physics_orographic` | boolean | Westerly wind + precip > 0 | Orographic lift likely. |
+| `physics_chinook` | boolean | Base > summit + W/SW wind | Chinook conditions. |
+| `physics_valley_channelling` | boolean | Summit wind ≫ base or summit > 40 km/h | Valley channelling / wind-hold risk. |
+
+### 7.3 6am-focused fields (public + Stash Finder)
+
+| Field | Type | Source | Description |
+|-------|------|--------|-------------|
+| `forecast_day_summary` | string \| null | `buildForecastDaySummary(hrdps/timeline)` | Short text: wind, precip, temps by period through the day (for Stash Finder + clouds). |
+| `resort_report_changes` | string \| null | Diff of previous vs current resort snapshot | Only on re-runs after 6am: “Lifts opened: X. Newly groomed: Y. Snow report updated: Z.” |
+
+### 7.4 Building another morning prompt
+
+- **Input:** The same JSON payload above (as a single object or stringified). You can pass it to another model/prompt that suggests “the morning report in whole” (e.g. one paragraph combining 4am-style technical detail and 6am-style public summary, or a single suggested headline + body).
+- **When it’s available:** After the Lambda has run at 4am or 6am MST (or after a dry-run), you have the same data the AI received: sensors (WeatherLink), Pika snow, resort XML (open/groomed), HRDPS/RDPS 12h and vertical profile, and (for 6am) `forecast_day_summary` and optional `resort_report_changes`.
+- **Where it’s built:** `handler.ts` builds the payload once; `generateForecast(payload, reportType)` is called with `reportType` `"4am"` or `"6am"`. To feed a second prompt, you can reuse that payload (and optionally the returned `summary`, `stash_name`, `stash_note`, `groomer_pick`) as context for the “morning report in whole” prompt.
+
+---
+
 *Next: add example prompts, schema version, or link to the actual API response shape once implemented.*

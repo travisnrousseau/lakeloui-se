@@ -122,6 +122,7 @@ function mergeTimelineWithPrevious(
 /**
  * Merge detailed forecast rows with previous: fill missing lead hours (e.g. 0h/3h) from previous snapshot
  * so the table doesn't have gaps when the new run doesn't cover "now" yet.
+ * 7-day (rdps7d, gdps7d, rdps7dDays, gdps7dDays) are passed through from new when present, else previous.
  */
 function mergeDetailedWithPrevious(
   newDetailed: RenderData["detailedForecast"],
@@ -142,6 +143,10 @@ function mergeDetailedWithPrevious(
   return {
     hrdps: mergeRow(newDetailed.hrdps, prevDetailed.hrdps),
     rdps: mergeRow(newDetailed.rdps, prevDetailed.rdps),
+    rdps7d: newDetailed.rdps7d?.length ? newDetailed.rdps7d : (prevDetailed.rdps7d ?? []),
+    gdps7d: newDetailed.gdps7d?.length ? newDetailed.gdps7d : (prevDetailed.gdps7d ?? []),
+    rdps7dDays: newDetailed.rdps7dDays?.length ? newDetailed.rdps7dDays : (prevDetailed.rdps7dDays ?? []),
+    gdps7dDays: newDetailed.gdps7dDays?.length ? newDetailed.gdps7dDays : (prevDetailed.gdps7dDays ?? []),
     gdpsTrend: newDetailed.gdpsTrend,
     verticalProfile: newDetailed.verticalProfile ?? [],
     pm25: newDetailed.pm25 ?? null
@@ -240,6 +245,7 @@ async function send4amReportEmail(html: string): Promise<void> {
 }
 
 export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context: Context) => {
+  const startMs = Date.now();
   try {
     // 1. Fetch WeatherLink Pro API v2 (Paradise/Base) - The "Truth" Sensors (non-blocking: continue on failure)
     let weatherLinkData: Awaited<ReturnType<typeof fetchAllWeatherLinkStations>> = [null, null];
@@ -764,7 +770,10 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       }));
     }
 
+    const durationMs = Date.now() - startMs;
+    console.log("Lambda duration ms:", durationMs);
   } catch (error) {
     console.error("Error in orchestrator:", error);
+    console.log("Lambda duration ms (before error):", Date.now() - startMs);
   }
 };

@@ -76,3 +76,11 @@ variable "ses_from_email" {
   default     = ""
   sensitive   = true
 }
+
+# OpenRouter — AI narrative (6am public / 4am Snow Reporters). Set in terraform.tfvars or TF_VAR_openrouter_api_key.
+variable "openrouter_api_key" {
+  description = "OpenRouter API key for AI forecast narrative (6am/4am reports). Leave empty to skip AI; report still renders with groomer fallback."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

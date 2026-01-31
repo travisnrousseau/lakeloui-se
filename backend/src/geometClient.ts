@@ -466,10 +466,11 @@ export async function getGdpsPrecipMm(
 }
 
 /**
- * Fetch GDPS 10 m wind at a point (speed km/h, direction degrees 0–360).
- * Uses single layer GDPS_15km_Winds_10m; GeoMet may return [speed, dir] or one value (speed only).
+ * Fetch GDPS 10 m wind at a point (speed km/h, direction degrees 0–360, meteorological "from").
+ * GDPS GRIB2 exposes wind as U and V components (m/s). GeoMet GDPS_15km_Winds_10m returns two bands;
+ * we treat them as U (eastward), V (northward) in m/s and compute speed and "from" direction.
+ * Returns null if we don't have two valid U,V values (no fallback to wrong band interpretation).
  * time: optional ISO8601 valid time for forecast hour.
- * Returns null if no valid speed. Direction used as-is (no 180° correction).
  */
 export async function getGdpsWind10m(
   lat: number,
@@ -477,12 +478,17 @@ export async function getGdpsWind10m(
   time?: string
 ): Promise<{ speedKmh: number; dirDeg: number } | null> {
   const values = await fetchWmsPointValues(COVERAGE_IDS.GDPS_WINDS_10M, lat, lon, time);
-  const speedVal = values[0];
-  if (speedVal == null || !Number.isFinite(speedVal) || speedVal < 0) return null;
-  const dirVal = values[1];
-  const dirDeg =
-    dirVal != null && Number.isFinite(dirVal) ? (((dirVal % 360) + 360) % 360) : 0;
-  return { speedKmh: windSpeedKmh(speedVal), dirDeg };
+  const u = values[0];
+  const v = values[1];
+  if (u == null || !Number.isFinite(u) || v == null || !Number.isFinite(v)) return null;
+  // ECCC GDPS wind is U,V components (m/s). Plausible range ±150 m/s.
+  if (Math.abs(u) > 150 || Math.abs(v) > 150) return null;
+  const speedMs = Math.sqrt(u * u + v * v);
+  const speedKmh = speedMs * 3.6;
+  if (speedKmh <= 0) return null;
+  // Meteorological "from" direction (degrees): 180 + atan2(U, V); 0 = N, 90 = E, 270 = W.
+  const dirDeg = ((180 + (Math.atan2(u, v) * 180) / Math.PI) + 360) % 360;
+  return { speedKmh, dirDeg };
 }
 
 /**

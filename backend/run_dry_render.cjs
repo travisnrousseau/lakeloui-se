@@ -75,6 +75,7 @@ const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 const { makeEmailSafe } = require('./dist/emailHtml.cjs');
 
 (async () => {
+  const startMs = Date.now();
   try {
     let weatherLinkData = [null, null], waterData = [], pikaData = null, skokiData = null, forecastTimeline = [], detailedForecast = null, townsiteData = null, resortData = null;
     let cache = {};
@@ -248,6 +249,7 @@ const { makeEmailSafe } = require('./dist/emailHtml.cjs');
     let stashWhy = 'Dry run render';
     let stashCardLabel = 'STASH FINDER';
     if (process.env.OPENROUTER_API_KEY) {
+      const openRouterStartMs = Date.now();
       console.log('OpenRouter: API key present, reportType=' + (use4amReport ? '4am' : '6am') + ', calling generateForecast...');
       const payload = {
         summit_temp_c: weatherForRender[0]?.temp ?? null,
@@ -349,6 +351,7 @@ const { makeEmailSafe } = require('./dist/emailHtml.cjs');
       try {
         const reportType = use4amReport ? '4am' : '6am';
         const result = await openRouter.generateForecast(payload, reportType);
+        console.log('OpenRouter duration ms:', Date.now() - openRouterStartMs);
         if (result) {
           if (use4amReport) {
             stashCardLabel = '04:00 REPORT';
@@ -457,6 +460,7 @@ const { makeEmailSafe } = require('./dist/emailHtml.cjs');
     } catch (e) {
       console.warn('Could not write dry-run cache:', e.message);
     }
+    console.log('Total dry-run duration ms:', Date.now() - startMs);
     if (needModels && (liveDetailedForecast != null || (forecastTimeline && forecastTimeline.length > 0))) {
       const cachePath = path.join(__dirname, 'fixtures', 'cached-forecast.json');
       try {

@@ -11,6 +11,9 @@ weatherlink_station_id_base   = "23428"   # Base (Skilouise Operations)
 # domain_name     = "wx.lakeloui.se"
 # route53_zone_id = "Z0123456789ABCDEF"   # Route 53 hosted zone ID for lakeloui.se (AWS console or: aws route53 list-hosted-zones)
 
+# OpenRouter — AI narrative (6am public / 4am reports). Get key from openrouter.ai. Leave empty to skip AI (groomer fallback).
+# openrouter_api_key = "sk-or-v1-..."
+
 # 4am report email — full index.html (including AI summary) sent when 4am MST report runs. From address must be verified (e.g. WorkMail).
 # report_4am_email = "simpler.poshest.3p@icloud.com"
 # ses_from_email   = "info@rousseau.tv"   # WorkMail-hosted; use a verified sender in your AWS account

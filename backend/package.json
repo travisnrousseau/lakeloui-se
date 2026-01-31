@@ -12,6 +12,7 @@
     "invoke": "node dist/handler.js",
     "dry-render": "npm run build && NODE_ENV=development node run_dry_render.cjs",
     "dry-render:4am": "npm run build && NODE_ENV=development REPORT_TYPE=4am node run_dry_render.cjs",
+    "dry-render:6am": "npm run build && NODE_ENV=development REPORT_TYPE=6am node run_dry_render.cjs",
     "dry-render:open": "npm run dry-render && (xdg-open /tmp/lakeloui_live_dry_index.html 2>/dev/null || open /tmp/lakeloui_live_dry_index.html 2>/dev/null || echo 'Open file:///tmp/lakeloui_live_dry_index.html in your browser')",
     "check-forecast": "npm run build && node scripts/check-forecast-local.cjs",
     "check-geomet": "npm run build && node scripts/check-geomet-local.cjs",

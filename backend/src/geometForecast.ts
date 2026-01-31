@@ -51,6 +51,8 @@ const SEVEN_DAY_LEADS_DETAILED = [12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132,
 /**
  * Return subset of leadSet for which the layer has a valid time in GetCapabilities.
  * Used for 7-day RDPS/GDPS table.
+ * When no times match (e.g. GDPS uses different interval or format), return full leadSet
+ * so we still attempt requests—GeoMet may accept the time parameter and return data.
  */
 async function getAvailableLeadsInSet(
   ref: Date,
@@ -60,7 +62,8 @@ async function getAvailableLeadsInSet(
   const times = await getCapabilities(layerName);
   if (times.length === 0) return [...leadSet];
   const validSet = new Set(times.map(normalizeTimeIso));
-  return leadSet.filter((h) => validSet.has(normalizeTimeIso(validTimeIso(ref, h))));
+  const filtered = leadSet.filter((h) => validSet.has(normalizeTimeIso(validTimeIso(ref, h))));
+  return filtered.length > 0 ? filtered : [...leadSet];
 }
 
 /** HRDPS runs at 00, 06, 12, 18 UTC. Return latest run time (UTC) at or before now. */

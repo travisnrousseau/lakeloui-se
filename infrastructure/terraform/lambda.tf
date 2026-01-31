@@ -100,6 +100,7 @@ resource "aws_lambda_function" "orchestrator" {
       WEATHERLINK_STATION_ID_BASE  = var.weatherlink_station_id_base
       REPORT_4AM_EMAIL             = var.report_4am_email
       SES_FROM_EMAIL               = var.ses_from_email
+      OPENROUTER_API_KEY           = var.openrouter_api_key
     }
   }
 }
