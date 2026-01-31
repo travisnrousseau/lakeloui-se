@@ -282,6 +282,21 @@ const { makeEmailSafe } = require('./dist/emailHtml.cjs');
         payload.open_lifts = openLifts;
         payload.groomed_runs = groomedRuns;
       }
+      // Pika & Skoki (GOES-18) pillow data — 4am uses Pika for narrative; Skoki for context only
+      if (pikaData) {
+        payload.pika_goes_12h_mm = pikaData.precip12hMm ?? null;
+        payload.pika_goes_24h_mm = pikaData.precip24hMm ?? null;
+        payload.pika_goes_48h_mm = pikaData.precip48hMm ?? null;
+        payload.pika_goes_7d_mm = pikaData.precip7dMm ?? null;
+        payload.pika_goes_observed_at = pikaData.timestamp ?? null;
+      }
+      if (skokiData) {
+        payload.skoki_goes_12h_mm = skokiData.precip12hMm ?? null;
+        payload.skoki_goes_24h_mm = skokiData.precip24hMm ?? null;
+        payload.skoki_goes_48h_mm = skokiData.precip48hMm ?? null;
+        payload.skoki_goes_7d_mm = skokiData.precip7dMm ?? null;
+        payload.skoki_goes_observed_at = skokiData.timestamp ?? null;
+      }
       // 4am report: add 12h forecast, freezing level, Pika time, physics flags (same as handler)
       payload.snow_report_observed_at = pikaSnowReport?.lastSnowfallUpdate ?? pikaSnowReport?.lastSnowfallDate ?? null;
       const hrdps12 = (detailedForecast && detailedForecast.hrdps) || forecastTimeline || [];

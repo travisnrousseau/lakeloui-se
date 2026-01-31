@@ -67,7 +67,7 @@ const DEFAULT_SYSTEM_PROMPT_4AM = `You are the weather forecaster for Lake Louis
 
 The payload includes explicit data so you can call out scientific happenings accurately:
 
-(1) **Pika / snow report:** Use snow_24h_cm and snow_overnight_cm. When snow_report_observed_at is present, state the observation time (e.g. "Pika at 04:00 — 8 cm overnight").
+(1) **Pika / new snow (use Pika only; do not cite Skoki):** You have two sources: (a) Resort snow report: snow_24h_cm, snow_overnight_cm, snow_report_observed_at. (b) GOES-18 Pika pillow: pika_goes_12h_mm, pika_goes_24h_mm, pika_goes_48h_mm, pika_goes_7d_mm, pika_goes_observed_at. **Always use and cite only Pika** in the narrative (Skoki is for context; do not mention Skoki in the summary). When resort snow_24h_cm/snow_overnight_cm are null or zero, use Pika GOES data: state "Pika (GOES-18) at [time]: X mm liquid in 12h, Y mm in 24h" and approximate snow cm when below freezing (~1.5 cm per mm liquid). When both resort and Pika GOES are present, prefer Pika GOES for precise accumulations; include observation time (e.g. "Pika at 17:45 MST — 2.4 mm in 12h, 2.7 mm in 24h (about 3.6 cm snow 12h)").
 
 (2) **Next 12 h (HRDPS/RDPS):** When forecast_12h_precip_mm, forecast_12h_wind_kmh, forecast_12h_wind_dir_deg, forecast_12h_temp_base_c, forecast_12h_temp_summit_c are present, use them for "snow forecast in the next 12 hours" and "wind direction forecast". State approximate precip (mm liquid → snow cm when below freezing), wind direction, and temps. Explain why (e.g. orographic lift from W flow) when physics_orographic is true.
 
@@ -82,7 +82,7 @@ Do not state the absence of these (e.g. do not say "There is no inversion", "no 
 
 Output: Reply with exactly one JSON object, no markdown or extra text.
 {
-  "summary": "The technical brief in exactly 4 to 6 sentences. Use the payload fields above. Include: Pika new snow (value + time if snow_report_observed_at). Next 12h snow/wind from forecast_12h_* when present. Freezing level when freezing_level_m present. Call out inversion, Chinook, orographic, valley channelling by name only when their flags are true; do not mention them when false. Wind and best skiing from wind direction. 4–6 sentences only.",
+  "summary": "The technical brief in exactly 4 to 6 sentences. Use the payload fields above. Include: Pika new snow from pika_goes_* (and/or resort snow_24h_cm/snow_overnight_cm); cite Pika only, with observation time. Next 12h snow/wind from forecast_12h_* when present. Freezing level when freezing_level_m present. Call out inversion, Chinook, orographic, valley channelling by name only when their flags are true; do not mention them when false. Wind and best skiing from wind direction. 4–6 sentences only.",
   "stash_name": "Optional. Omit for 4am report.",
   "stash_note": "Optional. Omit for 4am report.",
   "groomer_pick": "Optional. Omit for 4am report."
@@ -168,6 +168,18 @@ export interface ForecastPayload {
   forecast_day_summary?: string | null;
   /** 6am re-run: short summary of what changed in resort report (lifts opened/closed, newly groomed, snow amounts) so the model can call it out (AI_WEATHER_OUTPUT §1.3). */
   resort_report_changes?: string | null;
+  /** 4am: GOES-18 Pika Run pillow — precip mm (12h/24h/48h/7d) and observation time. Use Pika for narrative; do not cite Skoki. */
+  pika_goes_12h_mm?: number | null;
+  pika_goes_24h_mm?: number | null;
+  pika_goes_48h_mm?: number | null;
+  pika_goes_7d_mm?: number | null;
+  pika_goes_observed_at?: string | null;
+  /** 4am: GOES-18 Skoki pillow — for context only; do not cite in summary. */
+  skoki_goes_12h_mm?: number | null;
+  skoki_goes_24h_mm?: number | null;
+  skoki_goes_48h_mm?: number | null;
+  skoki_goes_7d_mm?: number | null;
+  skoki_goes_observed_at?: string | null;
   [key: string]: unknown;
 }
 

@@ -467,9 +467,9 @@ export async function getGdpsPrecipMm(
 
 /**
  * Fetch GDPS 10 m wind at a point (speed km/h, direction degrees 0–360, meteorological "from").
- * GDPS GRIB2 exposes wind as U and V components (m/s). GeoMet GDPS_15km_Winds_10m returns two bands;
- * we treat them as U (eastward), V (northward) in m/s and compute speed and "from" direction.
- * Returns null if we don't have two valid U,V values (no fallback to wrong band interpretation).
+ * GDPS GRIB2 exposes wind as U and V components. GeoMet GDPS_15km_Winds_10m returns two bands;
+ * ECCC uses 0.1 m/s units for wind components in GRIB2, so we scale by 0.1 to get m/s before
+ * computing speed and "from" direction. Cap speed at 150 km/h to avoid impossible values from bad data.
  * time: optional ISO8601 valid time for forecast hour.
  */
 export async function getGdpsWind10m(
@@ -478,16 +478,19 @@ export async function getGdpsWind10m(
   time?: string
 ): Promise<{ speedKmh: number; dirDeg: number } | null> {
   const values = await fetchWmsPointValues(COVERAGE_IDS.GDPS_WINDS_10M, lat, lon, time);
-  const u = values[0];
-  const v = values[1];
-  if (u == null || !Number.isFinite(u) || v == null || !Number.isFinite(v)) return null;
-  // ECCC GDPS wind is U,V components (m/s). Plausible range ±150 m/s.
+  const uRaw = values[0];
+  const vRaw = values[1];
+  if (uRaw == null || !Number.isFinite(uRaw) || vRaw == null || !Number.isFinite(vRaw)) return null;
+  // ECCC GRIB2 wind components are in 0.1 m/s (see GDPS datamart). Convert to m/s.
+  const u = uRaw * 0.1;
+  const v = vRaw * 0.1;
   if (Math.abs(u) > 150 || Math.abs(v) > 150) return null;
   const speedMs = Math.sqrt(u * u + v * v);
-  const speedKmh = speedMs * 3.6;
+  let speedKmh = speedMs * 3.6;
   if (speedKmh <= 0) return null;
+  if (speedKmh > 150) speedKmh = 150; // cap for 10 m wind
   // Meteorological "from" direction (degrees): 180 + atan2(U, V); 0 = N, 90 = E, 270 = W.
-  const dirDeg = ((180 + (Math.atan2(u, v) * 180) / Math.PI) + 360) % 360;
+  const dirDeg = Math.round(((180 + (Math.atan2(u, v) * 180) / Math.PI) + 360) % 360);
   return { speedKmh, dirDeg };
 }
 

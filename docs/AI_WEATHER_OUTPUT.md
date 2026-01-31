@@ -42,7 +42,9 @@ We produce **two (or more) reports per day**, at different times and for differe
 
 | Field | Source | Purpose |
 |-------|--------|---------|
-| `snow_report_observed_at` | Resort XML `lastSnowfallUpdate` or `lastSnowfallDate` | So the brief can state "Pika at 04:00" (observation time). |
+| `pika_goes_12h_mm`, `pika_goes_24h_mm`, `pika_goes_48h_mm`, `pika_goes_7d_mm`, `pika_goes_observed_at` | GOES-18 Pika Run (Alberta River Basins) — 12h/24h/48h/7d precip mm + timestamp | **Primary snow source for 4am.** When resort snow_24h_cm/snow_overnight_cm are null or zero, the model uses Pika GOES data so the brief does not say "no snow reported" when Pika shows new snow. The model **cites only Pika** in the narrative (not Skoki). |
+| `skoki_goes_12h_mm`, `skoki_goes_24h_mm`, `skoki_goes_48h_mm`, `skoki_goes_7d_mm`, `skoki_goes_observed_at` | GOES-18 Skoki (Alberta River Basins) | For context only; the model must **not** cite Skoki in the summary. |
+| `snow_report_observed_at` | Resort XML `lastSnowfallUpdate` or `lastSnowfallDate` | So the brief can state "Pika at 04:00" (observation time) when resort report is used. |
 | `forecast_12h_precip_mm` | HRDPS/RDPS — sum of precip (mm liquid) for leads 0–12 h | Next 12 h snow forecast; model states amount and time windows. |
 | `forecast_12h_wind_kmh`, `forecast_12h_wind_dir_deg` | HRDPS/RDPS 6 h or 12 h lead | Wind direction forecast and where best skiing will be. |
 | `forecast_12h_temp_base_c`, `forecast_12h_temp_summit_c` | HRDPS/RDPS 6 h or 12 h lead | Model temps for next 12 h. |
