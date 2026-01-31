@@ -36,7 +36,7 @@ We produce **two (or more) reports per day**, at different times and for differe
   - **Arctic outbreak / cold air pooling** — dense cold air against the Divide; inversion link. See MODELS_ROCKIES_OPERATIONS §3.
 - **Goal:** Snow Reporters get a precise, educational brief they can use on the hill and that teaches *why* conditions are the way they are.
 
-**4am report email:** When the 4am MST report runs, the Lambda can send the **full index.html** (same content as the live page, including the AI summary and all cards) to a configured address via AWS SES. Set `REPORT_4AM_EMAIL` (recipient) and `SES_FROM_EMAIL` (verified sender, e.g. WorkMail-hosted `info@rousseau.tv`) in Terraform or Lambda env; if either is empty, no email is sent. See `infrastructure/terraform/terraform.tfvars.example` and variables `report_4am_email` / `ses_from_email`. **Local dry-run:** For `npm run dry-render:4am` to send the email, add `REPORT_4AM_EMAIL` and `SES_FROM_EMAIL` to `backend/.env`; otherwise the script logs "email skipped" and only writes the HTML to `/tmp`.
+**4am report email:** When the 4am MST report runs, the Lambda can send the **full index.html** (same content as the live page, including the AI summary and all cards) to a configured address via AWS SES. Set `REPORT_4AM_EMAIL` (recipient) and `SES_FROM_EMAIL` (verified sender, e.g. WorkMail-hosted `info@rousseau.tv`) in Terraform or Lambda env; if either is empty, no email is sent. See `infrastructure/terraform/terraform.tfvars.example` and variables `report_4am_email` / `ses_from_email`. **Local dry-run:** For `npm run dry-render:4am` to send the email, add `REPORT_4AM_EMAIL` and `SES_FROM_EMAIL` to `backend/.env`; otherwise the script logs "email skipped" and only writes the HTML to `/tmp`. For the **6am (public)** report locally: `npm run dry-render:6am` (writes HTML to `/tmp`; hero + STASH FINDER use the simple, non-technical AI output per §1.2).
 
 **Input payload for 4am (so the model can call out scientific happenings accurately):** In addition to the shared payload (summit/base temp and wind, snow_24h_cm, snow_overnight_cm, open_lifts, groomed_runs, inversion_active), the Lambda sends:
 
@@ -55,6 +55,8 @@ We produce **two (or more) reports per day**, at different times and for differe
 
 - **Tone:** Very simple. No jargon unless we briefly explain it in plain language (e.g. “Chinook—a warm wind that can melt snow quickly”).
 - **Content:** **The forecast people read:** current conditions in one or two sentences and what to expect today (`summary`). Optionally add one Stash Finder note (zone + why) and one groomer pick when relevant. Same fields as §2; Stash Finder details in §6.
+- **Voice:** Never use "we", "we've", or "we're". Use impersonal phrasing: "There has been a dusting of 1 cm" not "We've had a dusting…"; "Conditions are…" not "We're seeing…".
+- **Stash Finder:** Always suggest something. Prefer a wind/aspect stash when data supports it (only open terrain). When conditions are unknown or no clear stash, suggest groomers: Saddleback, Larch, or Richardson area are safer bets. Only suggest open terrain—check open_lifts; never mention closed areas or closed runs. **Frontside** = West Bowl only. **Backside** = Whitehorn, Eagle Ridge (ER), Paradise, East Bowl, Crow Bowl; Larch & The Glades are backside. Only name a zone if its access lift(s) are in open_lifts. Never use the name "The Horseshoe" or "Horseshoe". Base stash_note on (1) **overnight** — snow amounts and wind direction (wind loads snow on the lee side); (2) **through the day** — use `forecast_day_summary` and 12h forecast (wind shift? precip timing?); (3) **clouds** — infer from precip/conditions. When uncertain, default to a groomer suggestion with a note like "Groomed runs are a safer bet when conditions are uncertain."
 - **Exceptional physics:** If inversion, Chinook, or other standout physics are happening, **call them out in one short, educational sentence** in the summary so the public learns (e.g. “We’re in an inversion—cold air is trapped in the valley, so the base can be much colder than the top.”).
 
 ### 1.3 Re-runs after 6am (before 10am)
@@ -74,8 +76,8 @@ Structured JSON so the frontend can slot it into the UI without parsing prose. A
 | Field | Purpose |
 |-------|--------|
 | `summary` | **The forecast.** One or two sentences: conditions right now and what to expect. This is the main narrative people read on the HUD. |
-| `stash_name` | Optional. Short zone name for the STASH FINDER card (e.g. "The Horseshoe", "Larch & The Glades"). Omit if no stash. Maps to **STASH_NAME** in the template. |
-| `stash_note` | Optional. One sentence: *why* wind or aspect is favouring snow there. Omit if no stash. Maps to **STASH_WHY** in the template. |
+| `stash_name` | Required. Short zone or area name (e.g. "West Bowl", "Larch & The Glades", "Saddleback / Larch", "Richardson"). Prefer wind/aspect stash when data supports it; when uncertain use a groomer suggestion. Never use "The Horseshoe" or "Horseshoe". Maps to **STASH_NAME** in the template. |
+| `stash_note` | Required. One sentence: *why* that area (wind loading, aspect, or that groomed runs are a safer bet when conditions are uncertain). Maps to **STASH_WHY** in the template. |
 | `groomer_pick` | Optional. One groomed run to highlight (Groomer Check). Only suggest **open** runs; never recommend closed terrain. |
 
 **Example (public):**

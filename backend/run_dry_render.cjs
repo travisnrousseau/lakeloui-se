@@ -323,6 +323,29 @@ const { makeEmailSafe } = require('./dist/emailHtml.cjs');
       payload.physics_orographic = sumDir != null && isWesterly(sumDir) && (forecast12hPrecipMm ?? 0) > 0;
       payload.physics_valley_channelling = (sumWind != null && baseWind != null && sumWind - baseWind > 15) || (sumWind != null && sumWind > 40);
 
+      // 6am Stash Finder: day-ahead summary (wind, precip, temps by period) + clouds
+      const timelineForDay = (detailedForecast && detailedForecast.hrdps) || forecastTimeline || [];
+      const WIND_DIR_LABELS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+      function windDirLabel(deg) {
+        if (deg == null) return '—';
+        const i = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
+        return WIND_DIR_LABELS[i];
+      }
+      const keyLeads = [0, 6, 12, 18, 24];
+      const dayParts = [];
+      for (let i = 0; i < keyLeads.length; i++) {
+        const lead = keyLeads[i];
+        const nextLead = keyLeads[i + 1] ?? lead + 6;
+        const period = timelineForDay.find((p) => p.leadHours === lead) ?? timelineForDay.find((p) => p.leadHours >= lead && p.leadHours < nextLead);
+        if (!period) continue;
+        const wind = period.windSpeed != null ? windDirLabel(period.windDir) + ' ' + Math.round(period.windSpeed) + ' km/h' : '';
+        const precip = (period.precipMm != null && period.precipMm > 0) ? period.precipMm + ' mm' : '0 mm';
+        const base = period.tempBase != null ? 'base ' + Math.round(period.tempBase) + '°C' : '';
+        const seg = [lead === 0 ? 'Now' : lead + 'h', wind, precip, base].filter(Boolean).join(', ');
+        if (seg) dayParts.push(seg);
+      }
+      payload.forecast_day_summary = dayParts.length > 0 ? dayParts.join('. ') : null;
+
       try {
         const reportType = use4amReport ? '4am' : '6am';
         const result = await openRouter.generateForecast(payload, reportType);
@@ -340,7 +363,9 @@ const { makeEmailSafe } = require('./dist/emailHtml.cjs');
             console.log('OpenRouter forecast generated. summary:', (result.summary || '').slice(0, 80) + (result.summary && result.summary.length > 80 ? '...' : ''));
           }
         } else {
-          console.log('OpenRouter: generateForecast returned null (check openRouter logs above).');
+          console.log('OpenRouter: generateForecast returned null (check openRouter logs above). Using groomer fallback.');
+          stashName = 'Saddleback / Larch';
+          stashWhy = 'Groomed runs are a safer bet when conditions are uncertain.';
         }
       } catch (e) {
         console.warn('OpenRouter forecast failed, using placeholder:', e.message);

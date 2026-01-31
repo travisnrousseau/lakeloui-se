@@ -29,6 +29,33 @@ function is4amReport(): boolean {
   return mst.getHours() === 4;
 }
 
+const WIND_DIR_LABELS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+
+function windDirLabel(deg: number | null | undefined): string {
+  if (deg == null) return "—";
+  const i = Math.round(((deg % 360) + 360) % 360 / 22.5) % 16;
+  return WIND_DIR_LABELS[i];
+}
+
+/** Build a short text summary of forecast through the day (0–24h) for Stash Finder + clouds (AI_WEATHER_OUTPUT §1.2). */
+function buildForecastDaySummary(timeline: ForecastPeriod[]): string | null {
+  if (!timeline?.length) return null;
+  const keyLeads = [0, 6, 12, 18, 24];
+  const parts: string[] = [];
+  for (let i = 0; i < keyLeads.length; i++) {
+    const lead = keyLeads[i];
+    const nextLead = keyLeads[i + 1] ?? lead + 6;
+    const period = timeline.find((p) => p.leadHours === lead) ?? timeline.find((p) => p.leadHours >= lead && p.leadHours < nextLead);
+    if (!period) continue;
+    const wind = period.windSpeed != null ? `${windDirLabel(period.windDir)} ${Math.round(period.windSpeed)} km/h` : "";
+    const precip = period.precipMm != null && period.precipMm > 0 ? `${period.precipMm} mm` : "0 mm";
+    const base = period.tempBase != null ? `base ${Math.round(period.tempBase)}°C` : "";
+    const seg = [lead === 0 ? "Now" : `${lead}h`, wind, precip, base].filter(Boolean).join(", ");
+    if (seg) parts.push(seg);
+  }
+  return parts.length > 0 ? parts.join(". ") : null;
+}
+
 const ddbClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddbClient);
 const s3Client = new S3Client({});
@@ -444,8 +471,8 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
 
     // Forecast narrative: OpenRouter when shouldProcessAI and OPENROUTER_API_KEY set; else fallback
     let aiScript = "Conditions as last report. Next update when resort data changes.";
-    let stashName = "THE HORSESHOE";
-    let stashWhy = "Check wind and aspect for the stash.";
+    let stashName = "Saddleback / Larch";
+    let stashWhy = "Groomed runs are a safer bet when conditions are uncertain.";
     const use4amReport = is4amReport();
     let stashCardLabel: string = "STASH FINDER";
 
@@ -526,6 +553,9 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       payload.physics_valley_channelling =
         (sumWind != null && baseWind != null && sumWind - baseWind > 15) || (sumWind != null && sumWind > 40);
 
+      // 6am Stash Finder: day-ahead summary (wind, precip, temps by period) so model can use overnight + forecast + clouds
+      payload.forecast_day_summary = buildForecastDaySummary(detailedForecast?.hrdps ?? forecastTimeline);
+
       const reportType = use4amReport ? "4am" : "6am";
       const forecastResult = await generateForecast(payload, reportType);
       if (forecastResult) {
@@ -541,8 +571,9 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
           if (forecastResult.stash_note) stashWhy = forecastResult.stash_note;
         }
       } else {
-        aiScript = "NW winds are loading the Horseshoe. Go deep in the A-I Gullies. It's an inversion day—stay high for the heat.";
-        stashWhy = "NW flow loading the gullies. High quality transport expected.";
+        aiScript = "Conditions as last report. Next update when resort data changes.";
+        stashName = "Saddleback / Larch";
+        stashWhy = "Groomed runs are a safer bet when conditions are uncertain.";
       }
     }
 
