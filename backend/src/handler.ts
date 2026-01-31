@@ -37,6 +37,41 @@ function windDirLabel(deg: number | null | undefined): string {
   return WIND_DIR_LABELS[i];
 }
 
+/** Snapshot of resort report (open lifts, groomed runs, snow) for diffing on re-runs (AI_WEATHER_OUTPUT §1.3). */
+interface ResortSnapshot {
+  open_lifts: string[];
+  groomed_runs: string[];
+  snow_overnight_cm: number | null;
+  snow_24h_cm: number | null;
+}
+
+/** Build a short summary of what changed in the resort report (lifts, runs, snow) for the LLM (AI_WEATHER_OUTPUT §1.3). */
+function buildResortChangesSummary(prev: ResortSnapshot | null, curr: ResortSnapshot): string | null {
+  if (!prev) return null;
+  const parts: string[] = [];
+  const prevLifts = new Set(prev.open_lifts);
+  const currLifts = new Set(curr.open_lifts);
+  const opened = curr.open_lifts.filter((l) => !prevLifts.has(l));
+  const closed = prev.open_lifts.filter((l) => !currLifts.has(l));
+  if (opened.length) parts.push(`Lifts opened: ${opened.join(", ")}`);
+  if (closed.length) parts.push(`Lifts closed: ${closed.join(", ")}`);
+  const prevRuns = new Set(prev.groomed_runs);
+  const newlyGroomed = curr.groomed_runs.filter((r) => !prevRuns.has(r));
+  if (newlyGroomed.length) parts.push(`Newly groomed: ${newlyGroomed.slice(0, 5).join(", ")}${newlyGroomed.length > 5 ? "…" : ""}`);
+  const snowChanged =
+    (prev.snow_overnight_cm != null && curr.snow_overnight_cm != null && prev.snow_overnight_cm !== curr.snow_overnight_cm) ||
+    (prev.snow_24h_cm != null && curr.snow_24h_cm != null && prev.snow_24h_cm !== curr.snow_24h_cm);
+  if (snowChanged) {
+    const bits: string[] = [];
+    if (prev.snow_overnight_cm !== curr.snow_overnight_cm && curr.snow_overnight_cm != null)
+      bits.push(`${curr.snow_overnight_cm} cm overnight`);
+    if (prev.snow_24h_cm !== curr.snow_24h_cm && curr.snow_24h_cm != null)
+      bits.push(`${curr.snow_24h_cm} cm in 24 h`);
+    if (bits.length) parts.push(`Snow report updated: ${bits.join("; ")}`);
+  }
+  return parts.length > 0 ? parts.join(". ") : null;
+}
+
 /** Build a short text summary of forecast through the day (0–24h) for Stash Finder + clouds (AI_WEATHER_OUTPUT §1.2). */
 function buildForecastDaySummary(timeline: ForecastPeriod[]): string | null {
   if (!timeline?.length) return null;
@@ -476,6 +511,8 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
     const use4amReport = is4amReport();
     let stashCardLabel: string = "STASH FINDER";
 
+    let currentResortSnapshot: ResortSnapshot | null = null;
+
     if (shouldProcessAI) {
       const payload: ForecastPayload = {
         summit_temp_c: weatherForRender[0]?.temp ?? null,
@@ -507,6 +544,30 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
         }
         payload.open_lifts = openLifts;
         payload.groomed_runs = groomedRuns;
+        currentResortSnapshot = {
+          open_lifts: openLifts,
+          groomed_runs: groomedRuns,
+          snow_overnight_cm: pikaSnowReport?.snowOverNight ?? null,
+          snow_24h_cm: pikaSnowReport?.snow24Hours ?? null,
+        };
+      }
+      // Resort report changes (re-run after 6am): compare to previous snapshot so LLM can call out what changed (AI_WEATHER_OUTPUT §1.3)
+      if (!use4amReport && currentResortSnapshot) {
+        const prevSnapshotResult = await docClient.send(new GetCommand({
+          TableName: LIVE_LOG_TABLE,
+          Key: { pk: "RESORT_SNAPSHOT_PREV", sk: "LATEST" }
+        }));
+        const prev = prevSnapshotResult.Item as ResortSnapshot | undefined;
+        const prevSnapshot: ResortSnapshot | null = prev && Array.isArray(prev.open_lifts) && Array.isArray(prev.groomed_runs)
+          ? {
+              open_lifts: prev.open_lifts,
+              groomed_runs: prev.groomed_runs,
+              snow_overnight_cm: typeof prev.snow_overnight_cm === "number" ? prev.snow_overnight_cm : null,
+              snow_24h_cm: typeof prev.snow_24h_cm === "number" ? prev.snow_24h_cm : null,
+            }
+          : null;
+        const resortReportChanges = buildResortChangesSummary(prevSnapshot, currentResortSnapshot);
+        if (resortReportChanges) payload.resort_report_changes = resortReportChanges;
       }
       // 4am report: add HRDPS/RDPS 12h forecast, freezing level, Pika time, and explicit physics flags
       payload.snow_report_observed_at = pikaSnowReport?.lastSnowfallUpdate ?? pikaSnowReport?.lastSnowfallDate ?? null;
@@ -594,6 +655,19 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
     };
     const html = renderHtml(renderData);
     await publishHtml(html);
+
+    // Persist current resort snapshot for next run's "what changed" diff (AI_WEATHER_OUTPUT §1.3)
+    if (shouldProcessAI && currentResortSnapshot) {
+      await docClient.send(new PutCommand({
+        TableName: LIVE_LOG_TABLE,
+        Item: sanitizeForDynamo({
+          pk: "RESORT_SNAPSHOT_PREV",
+          sk: "LATEST",
+          ...currentResortSnapshot,
+          updatedAt: now.toISOString()
+        }) as Record<string, unknown>
+      }));
+    }
 
     if (use4amReport) {
       await send4amReportEmail(makeEmailSafe(html));

@@ -64,6 +64,9 @@ We produce **two (or more) reports per day**, at different times and for differe
 - When the **resort** publishes a new snow report after 06:00 (typically ~05:30), the pipeline **regenerates the public (6am-style) report**.
 - Re-run **as many times as needed** as long as the trigger time is **before 10:00**. After 10:00, do not auto re-run for that day’s “morning” cycle.
 - Ensures the narrative stays in sync with the latest resort numbers and open/groomed status.
+- **Resort report changes:** When the resort XML changes (new snow amounts, runs opened/closed, groomed status), **call it out in the summary** so readers know what changed (e.g. "Resort updated: 3 cm overnight; Larch Express now open" or "Snow report revised — 5 cm in 24 h").
+
+**On AWS / Next 7 days:** The **Next 7 days** table is filled from RDPS and GDPS model data and refreshes each Lambda run. If the table is empty on the live site (e.g. model data not yet available for 7-day leads), it will populate on the next run; locally, run `npm run dry-render` again to refresh with fresh model data.
 
 ---
 

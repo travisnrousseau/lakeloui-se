@@ -46,6 +46,7 @@ Output: Reply with exactly one JSON object, no markdown or extra text. This is t
 Rules (from AI_WEATHER_OUTPUT):
 - Never use "we", "we've", "we're", or "our". Use impersonal phrasing: "There has been…", "There is…", "Conditions are…", "Temperatures will…". Example: "There has been a dusting of 1 cm in the last 24 hours" not "We've had a dusting…".
 - Only mention history when the payload has a non-null history_alert (e.g. "On this day in 2019…").
+- **Resort report changes:** When the payload has resort_report_changes (lifts opened/closed, newly groomed, snow amounts updated), work it into the summary in one short phrase so readers know what changed (e.g. "Resort updated: 3 cm overnight; Larch Express now open" or "Snow report revised — 5 cm in 24 h"). Do not repeat the raw string; paraphrase naturally.
 - Never suggest closed runs or terrain that requires a closed lift. Groomer pick must be from groomed_runs; stash zone must be reachable with open_lifts. Never use the name "The Horseshoe" or "Horseshoe".
 - Short. Summary: 1–2 sentences. Stash note and groomer pick: one sentence each when present.
 - No hedging fluff — use "might" or "could" only when the data is uncertain; otherwise state what the data says.
@@ -165,6 +166,8 @@ export interface ForecastPayload {
   physics_valley_channelling?: boolean;
   /** 6am: short text summary of forecast through the day (wind, precip, temps by period) for Stash Finder + clouds. */
   forecast_day_summary?: string | null;
+  /** 6am re-run: short summary of what changed in resort report (lifts opened/closed, newly groomed, snow amounts) so the model can call it out (AI_WEATHER_OUTPUT §1.3). */
+  resort_report_changes?: string | null;
   [key: string]: unknown;
 }
 
