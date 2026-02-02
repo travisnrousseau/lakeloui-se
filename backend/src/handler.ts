@@ -22,11 +22,35 @@ import {
 /** Canadian models via GeoMet WCS (HRDPS, GDPS). Set GEOMET_ENABLED=1 to fetch. */
 const GEOMET_ENABLED = process.env.GEOMET_ENABLED === "1" || process.env.GEOMET_ENABLED === "true";
 
-/** True when this run is the 4am (Snow Reporters) report: REPORT_TYPE=4am or current hour MST is 4. */
-function is4amReport(): boolean {
-  if (process.env.REPORT_TYPE === "4am") return true;
-  const mst = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Edmonton" }));
-  return mst.getHours() === 4;
+const MST_TZ = "America/Edmonton";
+
+/** MST hour and minute (0–23, 0–59) for window checks. */
+function getMstHourMinute(): { hour: number; minute: number } {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-CA", { timeZone: MST_TZ, hour: "numeric", minute: "numeric", hour12: false });
+  const parts = formatter.formatToParts(now);
+  const hour = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
+  const minute = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+  return { hour, minute };
+}
+
+/** True only in the first run after 4am MST (4:00–4:14), or when REPORT_TYPE=4am / event reportType=4am (manual test). */
+function is4amReport(eventReportType?: string): boolean {
+  if (process.env.REPORT_TYPE === "4am" || eventReportType === "4am") return true;
+  const { hour, minute } = getMstHourMinute();
+  return hour === 4 && minute < 15;
+}
+
+/** True in the first run after 6am MST (6:00–6:14) so we run the public report once. */
+function is6amReportWindow(): boolean {
+  const { hour, minute } = getMstHourMinute();
+  return hour === 6 && minute < 15;
+}
+
+/** True in the first run after 4am MST (4:00–4:14) so we run 4am report and send email once. */
+function is4amReportWindow(): boolean {
+  const { hour, minute } = getMstHourMinute();
+  return hour === 4 && minute < 15;
 }
 
 const WIND_DIR_LABELS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
@@ -225,7 +249,10 @@ const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL?.trim() || "";
  * Requires REPORT_4AM_EMAIL and SES_FROM_EMAIL (verified in SES) to be set.
  */
 async function send4amReportEmail(html: string): Promise<void> {
-  if (!REPORT_4AM_EMAIL || !SES_FROM_EMAIL) return;
+  if (!REPORT_4AM_EMAIL || !SES_FROM_EMAIL) {
+    console.log("4am report email skipped: REPORT_4AM_EMAIL or SES_FROM_EMAIL not set in Lambda env. Set report_4am_email and ses_from_email in terraform.tfvars and apply.");
+    return;
+  }
   const subject = `Lake Louise 04:00 Report — ${new Date().toLocaleDateString("en-CA", { timeZone: "America/Edmonton", year: "numeric", month: "short", day: "numeric" })}`;
   try {
     await sesClient.send(new SendEmailCommand({
@@ -406,6 +433,22 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       console.log(`Outside operational window (${utcHour} UTC). Skipping Resort XML and AI.`);
     }
 
+    // Manual 4am test: invoke with payload {"reportType": "4am"} to force AI and send 4am email
+    const eventReportType = (_event as ScheduledEvent & { reportType?: string }).reportType;
+    if (eventReportType === "4am") {
+      shouldProcessAI = true;
+      console.log("Manual 4am test: forcing AI processing and 4am email.");
+    }
+    // 4am run once in 4:00–4:14 MST; 6am report runs once in 6:00–6:14 MST
+    if (is4amReportWindow()) {
+      shouldProcessAI = true;
+      console.log("4am report window (MST): running AI and sending 4am email.");
+    }
+    if (is6amReportWindow()) {
+      shouldProcessAI = true;
+      console.log("6am report window (MST): running AI for public report.");
+    }
+
     // Snow report: use fresh Pika from resort XML when in window; otherwise last persisted report
     let pikaSnowReport: Awaited<ReturnType<typeof getPikaSnowReport>> = resortData ? getPikaSnowReport(resortData) : null;
     let snowReportUpdatedAt: string | undefined;
@@ -514,7 +557,7 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
     let aiScript = "Conditions as last report. Next update when resort data changes.";
     let stashName = "Saddleback / Larch";
     let stashWhy = "Groomed runs are a safer bet when conditions are uncertain.";
-    const use4amReport = is4amReport();
+    const use4amReport = eventReportType === "4am" || is4amReport();
     let stashCardLabel: string = "STASH FINDER";
 
     let currentResortSnapshot: ResortSnapshot | null = null;
@@ -528,8 +571,9 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
         summit_wind_dir_deg: weatherForRender[0]?.wind_direction_deg ?? null,
         base_wind_dir_deg: weatherForRender[1]?.wind_direction_deg ?? null,
         inversion_active: inversionActive,
-        snow_24h_cm: pikaSnowReport?.snow24Hours ?? null,
-        snow_overnight_cm: pikaSnowReport?.snowOverNight ?? null,
+        // 4am report: do not use resort snow; model uses Pika GOES only (AI_WEATHER_OUTPUT §1.1)
+        snow_24h_cm: use4amReport ? null : (pikaSnowReport?.snow24Hours ?? null),
+        snow_overnight_cm: use4amReport ? null : (pikaSnowReport?.snowOverNight ?? null),
         open_lifts: [],
         groomed_runs: [],
         history_alert: null,
@@ -596,12 +640,9 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
         (p) => p.leadHours <= 12 && (p.source === "HRDPS" || !detailedForecast?.hrdps?.length)
       );
       const period12 = hrdpsPeriods.find((p) => p.leadHours === 12) ?? hrdpsPeriods.find((p) => p.leadHours === 6);
-      let forecast12hPrecipMm: number | null = null;
-      if (hrdpsPeriods.length > 0) {
-        const sum = hrdpsPeriods.reduce((acc, p) => acc + (p.precipMm ?? 0), 0);
-        forecast12hPrecipMm = sum > 0 ? sum : null;
-      }
-      payload.forecast_12h_precip_mm = forecast12hPrecipMm ?? null;
+      // GeoMet Total Precipitation is accumulated from ref time; 12h lead value = 0–12h total (not sum of periods)
+      const forecast12hPrecipMm = period12?.precipMm != null && period12.precipMm > 0 ? period12.precipMm : null;
+      payload.forecast_12h_precip_mm = forecast12hPrecipMm;
       payload.forecast_12h_wind_kmh = period12?.windSpeed ?? null;
       payload.forecast_12h_wind_dir_deg = period12?.windDir ?? null;
       payload.forecast_12h_temp_base_c = period12?.tempBase ?? null;

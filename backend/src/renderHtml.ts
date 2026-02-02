@@ -436,11 +436,15 @@ function renderForecastSvg(hrdps: ForecastPeriod[] | undefined, rdps: ForecastPe
 
   const precipByLead: Record<number, number | null> = {};
   const isSnowByLead: Record<number, boolean> = {};
-  for (const lead of leads) {
+  for (let i = 0; i < leads.length; i++) {
+    const lead = leads[i]!;
     const h = getPeriod(hrdps, lead);
     const r = getPeriod(rdps, lead);
     const v = h?.precipMm ?? r?.precipMm ?? null;
-    precipByLead[lead] = v != null && Number.isFinite(v) ? v : null;
+    const prevLead = i > 0 ? leads[i - 1]! : null;
+    const prevV = prevLead != null ? (getPeriod(hrdps, prevLead)?.precipMm ?? getPeriod(rdps, prevLead)?.precipMm ?? 0) : 0;
+    const inc = v != null && Number.isFinite(v) ? Math.max(0, v - (Number.isFinite(prevV) ? prevV : 0)) : null;
+    precipByLead[lead] = inc != null && inc > 0 ? inc : null;
     const baseT = h?.tempBase ?? r?.tempBase ?? null;
     const meanT = ((h?.tempBase ?? NaN) + (h?.tempSummit ?? NaN)) / 2;
     const temp = Number.isFinite(baseT ?? NaN) ? baseT! : meanT;
@@ -590,8 +594,6 @@ function renderForecastBento(
   tableOnly: boolean = false
 ): string {
   const leads = getLeadsFromData(arr1, arr2);
-  const leads24 = arr1?.some((p) => p.leadHours === 3) ? [3, 6, 9, 12, 15, 18, 21, 24] : [6, 12, 18, 24];
-
   const getPeriod = (arr: ForecastPeriod[] | undefined, lead: number) => (arr || []).find(p => p.leadHours === lead) ?? null;
 
   /** Precip label: always state rain vs snow. Use base temp when available (rain/snow at base matters most). */
@@ -613,22 +615,32 @@ function renderForecastBento(
     return `${Math.round(snowCm)} cm snow`;
   };
 
+  // GeoMet Total Precipitation is accumulated from ref time; 24h lead value = 0–24h total (do not sum all leads)
   let next24SnowCm = 0;
-  for (const lead of leads24) {
-    const h = getPeriod(arr1, lead);
-    const r = getPeriod(arr2, lead);
-    const mm = h?.precipMm ?? r?.precipMm ?? null;
-    const meanTemp = ((h?.tempBase ?? NaN) + (h?.tempSummit ?? NaN)) / 2;
-    if (mm != null && Number.isFinite(mm)) {
-      if (Number.isFinite(meanTemp) && meanTemp <= 1) {
-        let ratio = 10;
-        if (meanTemp <= -10) ratio = 20;
-        else if (meanTemp <= -5) ratio = 15;
-        else if (meanTemp <= -1) ratio = 12;
-        next24SnowCm += (mm / ratio) * 10;
-      }
+  const period24h = getPeriod(arr1, 24) ?? getPeriod(arr2, 24);
+  if (period24h?.precipMm != null && Number.isFinite(period24h.precipMm) && period24h.precipMm > 0) {
+    const meanTemp = ((period24h.tempBase ?? NaN) + (period24h.tempSummit ?? NaN)) / 2;
+    if (Number.isFinite(meanTemp) && meanTemp <= 1) {
+      let ratio = 10;
+      if (meanTemp <= -10) ratio = 20;
+      else if (meanTemp <= -5) ratio = 15;
+      else if (meanTemp <= -1) ratio = 12;
+      next24SnowCm = (period24h.precipMm / ratio) * 10;
     }
   }
+
+  /** Per-period precip: GeoMet returns accumulated from ref time; show increment (this period) = value(lead) - value(prev_lead). */
+  const precipIncrementMm = (modelArr: ForecastPeriod[] | undefined, lead: number, precipFallback: ForecastPeriod[] | undefined): number | null => {
+    const idx = leads.indexOf(lead);
+    const prevLead = idx > 0 ? leads[idx - 1]! : null;
+    const curr = getPeriod(modelArr, lead) ?? getPeriod(precipFallback, lead);
+    const prev = prevLead != null ? (getPeriod(modelArr, prevLead) ?? getPeriod(precipFallback, prevLead)) : null;
+    const currMm = curr?.precipMm ?? null;
+    const prevMm = prev?.precipMm ?? 0;
+    if (currMm == null || !Number.isFinite(currMm)) return null;
+    const inc = Math.max(0, currMm - (Number.isFinite(prevMm) ? prevMm : 0));
+    return inc > 0 ? inc : null;
+  };
 
   /** When precipFallback is set (e.g. RDPS), use its precip for display when this row has none — so HRDPS row shows RDPS snow when HRDPS layer unavailable. */
   const cellFor = (
@@ -654,13 +666,9 @@ function renderForecastBento(
     const summitPart = summit != null ? `${summit}°` : "—";
     const basePart = base != null ? `${base}°` : "—";
     const tempStr = `${summitPart} / ${basePart}`;
-    const precipMm = (p.precipMm != null && Number.isFinite(p.precipMm) && p.precipMm > 0)
-      ? p.precipMm
-      : (precipFallback ? getPeriod(precipFallback, lead)?.precipMm : null) ?? null;
-    const precipTemp = precipMm != null && (p.precipMm == null || !Number.isFinite(p.precipMm) || p.precipMm <= 0) && precipFallback
-      ? getPeriod(precipFallback, lead)
-      : p;
-    const precipStr = precipDisplay(precipMm, (precipTemp?.tempBase != null && precipTemp?.tempSummit != null) ? (precipTemp.tempBase + precipTemp.tempSummit) / 2 : meanTemp, precipTemp?.tempBase ?? p.tempBase ?? null);
+    const precipMm = precipIncrementMm(modelArr, lead, precipFallback ?? []);
+    const precipTemp = p;
+    const precipStr = precipDisplay(precipMm ?? null, (precipTemp?.tempBase != null && precipTemp?.tempSummit != null) ? (precipTemp.tempBase + precipTemp.tempSummit) / 2 : meanTemp, precipTemp?.tempBase ?? p.tempBase ?? null);
     const windSpeed = (p.windSpeed != null && Number.isFinite(p.windSpeed))
       ? p.windSpeed
       : (precipFallback ? getPeriod(precipFallback, lead)?.windSpeed : null) ?? null;
@@ -684,14 +692,9 @@ function renderForecastBento(
 
   const svgBlock = tableOnly ? "" : renderForecastSvg(arr1, arr2);
   let next24RainMm = 0;
-  if (!tableOnly) {
-    for (const lead of leads24) {
-      const h = getPeriod(arr1, lead);
-      const r = getPeriod(arr2, lead);
-      const mm = h?.precipMm ?? r?.precipMm ?? null;
-      const baseT = h?.tempBase ?? r?.tempBase ?? NaN;
-      if (mm != null && Number.isFinite(mm) && Number.isFinite(baseT) && baseT > 1) next24RainMm += mm;
-    }
+  if (!tableOnly && period24h?.precipMm != null && Number.isFinite(period24h.precipMm) && period24h.precipMm > 0) {
+    const baseT = period24h.tempBase ?? period24h.tempSummit ?? NaN;
+    if (Number.isFinite(baseT) && baseT > 1) next24RainMm = period24h.precipMm;
   }
   const next24Line =
     !tableOnly && (next24SnowCm > 0 || next24RainMm > 0)

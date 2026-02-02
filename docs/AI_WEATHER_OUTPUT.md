@@ -16,8 +16,7 @@ We produce **two (or more) reports per day**, at different times and for differe
 | Time (MST) | Audience | Purpose |
 |------------|----------|--------|
 | **04:00** | **Snow Reporters** (Lake Louise Ski Resort) | Technical report. Safe to use more technical terms; **explain each term clearly and explain why it’s happening.** See §1.1. |
-| **06:00** | **Public** | Simple, non-technical summary. See §1.2. |
-| **After 06:00, before 10:00** | Same as 06:00 (public) | If the resort publishes another snow report after 06:00 (typically around **05:30**), **re-run the public report** as many times as needed, as long as it’s still before 10:00. Each new resort report triggers a fresh narrative so the public copy matches the latest conditions. |
+| **06:00** | **Public** | Simple, non-technical summary. **6am report runs once.** See §1.2. |
 
 ### 1.1 4am report (Snow Reporters — technical)
 
@@ -61,20 +60,13 @@ We produce **two (or more) reports per day**, at different times and for differe
 - **Stash Finder:** Always suggest something. Prefer a wind/aspect stash when data supports it (only open terrain). When conditions are unknown or no clear stash, suggest groomers: Saddleback, Larch, or Richardson area are safer bets. Only suggest open terrain—check open_lifts; never mention closed areas or closed runs. **Frontside** = West Bowl only. **Backside** = Whitehorn, Eagle Ridge (ER), Paradise, East Bowl, Crow Bowl; Larch & The Glades are backside. Only name a zone if its access lift(s) are in open_lifts. Never use the name "The Horseshoe" or "Horseshoe". Base stash_note on (1) **overnight** — snow amounts and wind direction (wind loads snow on the lee side); (2) **through the day** — use `forecast_day_summary` and 12h forecast (wind shift? precip timing?); (3) **clouds** — infer from precip/conditions. When uncertain, default to a groomer suggestion with a note like "Groomed runs are a safer bet when conditions are uncertain."
 - **Exceptional physics:** If inversion, Chinook, or other standout physics are happening, **call them out in one short, educational sentence** in the summary so the public learns (e.g. “We’re in an inversion—cold air is trapped in the valley, so the base can be much colder than the top.”).
 
-### 1.3 Re-runs after 6am (before 10am)
-
-- When the **resort** publishes a new snow report after 06:00 (typically ~05:30), the pipeline **regenerates the public (6am-style) report**.
-- Re-run **as many times as needed** as long as the trigger time is **before 10:00**. After 10:00, do not auto re-run for that day’s “morning” cycle.
-- Ensures the narrative stays in sync with the latest resort numbers and open/groomed status.
-- **Resort report changes:** When the resort XML changes (new snow amounts, runs opened/closed, groomed status), **call it out in the summary** so readers know what changed (e.g. "Resort updated: 3 cm overnight; Larch Express now open" or "Snow report revised — 5 cm in 24 h").
-
 **On AWS / Next 7 days:** The **Next 7 days** table is filled from RDPS and GDPS model data and refreshes each Lambda run. If the table is empty on the live site (e.g. model data not yet available for 7-day leads), it will populate on the next run; locally, run `npm run dry-render` again to refresh with fresh model data.
 
 ---
 
 ## 2. Output format
 
-Structured JSON so the frontend can slot it into the UI without parsing prose. Applies to the **6am (public)** and re-run reports; the **4am (technical)** report may use the same schema with longer, more technical `summary` and optional extra fields (e.g. `snow_forecast_12h`, `wind_direction_forecast`, `best_skiing_from_wind`) if needed.
+Structured JSON so the frontend can slot it into the UI without parsing prose. Applies to the **6am (public)** report; the **4am (technical)** report may use the same schema with longer, more technical `summary` and optional extra fields (e.g. `snow_forecast_12h`, `wind_direction_forecast`, `best_skiing_from_wind`) if needed.
 
 **Primary output:** `summary` — the forecast people read (conditions now + what to expect). Optional: `stash_name` / `stash_note` (Stash Finder card) and `groomer_pick` (Groomer Check).
 
@@ -113,7 +105,7 @@ Structured JSON so the frontend can slot it into the UI without parsing prose. A
 
 - **Stored:** Lambda writes the parsed JSON into Live_Log / FRONTEND_META (or equivalent); see [ARCHITECTURE](ARCHITECTURE.md).
 - **Served:** Frontend (wx.lakeloui.se) reads it from the same payload as the rest of the HUD (temp, wind, alerts) and renders **`summary`** as the main forecast people read (hero / narrative block). When present, `stash_name` and `stash_note` fill the STASH FINDER card; `groomer_pick` fills its section.
-- **Refresh:** LLM is called on the schedule in §1 (4am technical, 6am public) and when the resort publishes a new report before 10am (re-run public). Otherwise the last narrative is reused.
+- **Refresh:** LLM is called on the schedule in §1 (4am technical, 6am public). Otherwise the last narrative is reused.
 
 ---
 

@@ -497,6 +497,7 @@ export async function getGdpsWind10m(
 /**
  * Fetch HRDPS precipitation at a point (mm liquid). Tries HRDPS-WEonG_2.5km_TotalPrecipitation first,
  * then HRDPS.CONTINENTAL_APCP (doc fallback; WCS-style name may not be in WMS in some deployments).
+ * GeoMet returns accumulated precip from ref time: value at 12h = total 0–12h (not per-period).
  * time: optional ISO8601 valid time for forecast hour.
  * Returns null if both layers unavailable or fetch fails.
  */
@@ -515,6 +516,7 @@ export async function getHrdpsPrecipMm(
 
 /**
  * Fetch RDPS precipitation at a point (mm liquid). Layer RDPS.ETA_PR.
+ * GeoMet returns accumulated precip from ref time (value at lead = total 0–lead).
  * time: optional ISO8601 valid time for forecast hour.
  */
 export async function getRdpsPrecipMm(
