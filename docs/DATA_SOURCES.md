@@ -16,8 +16,11 @@ What we pull and what we use.
 
 **Polling:** Every **5 minutes** (Pro account allowance).
 
-**Endpoint:** `GET https://api.weatherlink.com/v2/current/{station_id}`  
-**Auth:** `api-key` (query), `X-Api-Secret` (header).
+**Endpoints:**
+- **Current conditions:** `GET https://api.weatherlink.com/v2/current/{station_id}` — one station per request.
+- **Station metadata:** `GET https://api.weatherlink.com/v2/stations/{station-ids}` — comma-delimited station IDs (max 100); integer or UUID. Returns metadata for those stations (e.g. name, location). Auth: `api-key` (query), `X-Api-Secret` (header).
+
+**Auth:** `api-key` (query), `X-Api-Secret` (header) for both.
 
 **Stations:** Paradise Top (summit) and Base (Operations). Set `WEATHERLINK_STATION_ID` (Paradise) and `WEATHERLINK_STATION_ID_BASE` (Base) in env; both optional. Order in UI: index 0 = Summit (Paradise), index 1 = Base.
 
@@ -42,7 +45,9 @@ Exact fields and units depend on hardware and are described in the [Sensor Catal
 
 - **temp** — Summit (Paradise) temp on the HUD.
 - **wind_speed_last** (or equivalent) — wind speed for display.
-- **wind_dir_last** (or equivalent) — wind direction for display and Stash Finder.
+- **wind_dir_last** (or equivalent) — wind direction (degrees 0–360, meteorological “from”) for display and Stash Finder.
+
+**Debugging wind direction:** If direction is missing, run `node backend/scripts/dump-weatherlink-current.mjs` (with `WEATHERLINK_*` env set). It prints each sensor’s `data_structure_type` and all record keys; check for `wind_dir_*` or `wind_direction`. Set `DEBUG_WEATHERLINK=1` when running the app to log which field supplied direction or which keys were present when direction was missing.
 - **wind_chill** / **heat_index** — Feels like shown subtly when >2°C different from temp.
 - **bar_sea_level** (or **bar_absolute**) — Inversion support: bar > 1018 hPa used in addition to HRDPS 850 vs 700 mb (assumes hPa; if inHg, ~30 inHg).
 

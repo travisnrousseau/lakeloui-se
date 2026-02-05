@@ -11,7 +11,7 @@ Spec for the **forecast people read** at wx.lakeloui.se. The Lambda turns sensor
 
 ## 1. Report schedule and audience
 
-We produce **two (or more) reports per day**, at different times and for different audiences.
+We produce **two (or more) reports per day**, at different times and for different audiences. **The LLM (OpenRouter/Gemini) is invoked only in the 4am and 6am MST windows** (or when manually triggered with `reportType` `4am` or `6am`); it does not run on every cron run or when resort XML changes, so usage stays at ~2 calls per day.
 
 | Time (MST) | Audience | Purpose |
 |------------|----------|--------|

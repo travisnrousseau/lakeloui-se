@@ -411,11 +411,8 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
         const lastHash = lastHashResult.Item?.xmlHash;
         const isXmlChanged = lastHash !== resortData.xmlHash;
 
-        if (!isXmlChanged) {
-          console.log("Resort XML unchanged (MD5 match). Skipping AI processing.");
-        } else {
-          console.log("Resort XML changed. Proceeding with AI processing.");
-          shouldProcessAI = true;
+        if (isXmlChanged) {
+          console.log("Resort XML changed (MD5). Persisting hash; AI runs only in 4am/6am windows.");
           await docClient.send(new PutCommand({
             TableName: LIVE_LOG_TABLE,
             Item: sanitizeForDynamo({
@@ -426,6 +423,7 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
             }) as Record<string, unknown>
           }));
         }
+        // AI (OpenRouter/Gemini) is only run in 4am and 6am MST windows (or manual reportType), not on every XML change.
       } catch (err) {
         console.error("Resort XML fetch failed, using last snow report if any:", err);
       }
@@ -433,18 +431,18 @@ export const handler: ScheduledHandler = async (_event: ScheduledEvent, _context
       console.log(`Outside operational window (${utcHour} UTC). Skipping Resort XML and AI.`);
     }
 
-    // Manual 4am test: invoke with payload {"reportType": "4am"} to force AI and send 4am email
+    // AI runs only 2x/day: 4am and 6am MST (or manual reportType for testing).
     const eventReportType = (_event as ScheduledEvent & { reportType?: string }).reportType;
     if (eventReportType === "4am") {
       shouldProcessAI = true;
-      console.log("Manual 4am test: forcing AI processing and 4am email.");
-    }
-    // 4am run once in 4:00–4:14 MST; 6am report runs once in 6:00–6:14 MST
-    if (is4amReportWindow()) {
+      console.log("Manual 4am: forcing AI and 4am email.");
+    } else if (eventReportType === "6am") {
+      shouldProcessAI = true;
+      console.log("Manual 6am: forcing AI for public report.");
+    } else if (is4amReportWindow()) {
       shouldProcessAI = true;
       console.log("4am report window (MST): running AI and sending 4am email.");
-    }
-    if (is6amReportWindow()) {
+    } else if (is6amReportWindow()) {
       shouldProcessAI = true;
       console.log("6am report window (MST): running AI for public report.");
     }

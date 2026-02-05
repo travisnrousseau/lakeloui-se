@@ -82,7 +82,15 @@ export function normalizeStationVitals(station: WeatherLinkData): {
         "wind_dir_at_hi_speed_last_10_min"
       );
       if (wind_direction_deg != null) {
-        console.log(`Caught wind direction: ${wind_direction_deg}° from field in record:`, Object.keys(rec).filter(k => k.includes('dir') || k.includes('wind')));
+        // Debug: confirm which field supplied direction (degrees 0–360, meteorological "from").
+        if (process.env.DEBUG_WEATHERLINK) {
+          const windKeys = Object.keys(rec).filter((k) => k.includes("dir") || k.includes("wind"));
+          console.log(`WeatherLink wind_dir: ${wind_direction_deg}° from record keys:`, windKeys);
+        }
+      } else if (wind_speed != null && process.env.DEBUG_WEATHERLINK) {
+        // Wind speed present but no direction — log record keys to find correct field name.
+        const windKeys = Object.keys(rec).filter((k) => k.includes("dir") || k.includes("wind"));
+        console.log("WeatherLink: wind_speed present but no wind_direction; record wind/dir keys:", windKeys);
       }
     }
     if (feels_like == null && (rec.wind_chill != null || rec.heat_index != null)) {
@@ -94,6 +102,33 @@ export function normalizeStationVitals(station: WeatherLinkData): {
   }
 
   return { temp, wind_speed, wind_direction_deg, feels_like, bar_sea_level };
+}
+
+/**
+ * GET /stations/{station-ids} — metadata for specific stations.
+ * station-ids: comma-delimited, max 100; integer or UUID.
+ */
+export interface WeatherLinkStationMetadata {
+  station_id?: number;
+  station_name?: string;
+  [key: string]: unknown;
+}
+
+export async function fetchWeatherLinkStationsMetadata(
+  stationIds: (number | string)[],
+  apiKey: string,
+  apiSecret: string
+): Promise<WeatherLinkStationMetadata[]> {
+  if (stationIds.length === 0) return [];
+  const ids = stationIds.slice(0, 100).join(",");
+  const response = await axios.get(`${WEATHERLINK_API_BASE}/stations/${ids}`, {
+    params: { "api-key": apiKey },
+    headers: { "X-Api-Secret": apiSecret },
+    timeout: 30_000,
+  });
+  const body = response.data as { stations?: WeatherLinkStationMetadata[] };
+  const list = body?.stations ?? (Array.isArray(body) ? body : []);
+  return list;
 }
 
 /**
