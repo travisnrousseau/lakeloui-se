@@ -3,9 +3,7 @@
   "version": "0.1.0",
   "description": "Mono-Lambda orchestrator for lakeloui.se — EventBridge every 15 min",
   "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
+  "engines": { "node": ">=20" },
   "scripts": {
     "prebuild": "npm install",
     "build": "tsc && for f in dist/*.js; do cp \"$f\" \"${f%.js}.cjs\"; done && node scripts/patch-cjs-requires.mjs && npm prune --omit=dev && cp -r node_modules dist/",
@@ -33,5 +31,8 @@
     "@types/aws-lambda": "^8.10.147",
     "@types/node": "^25.1.0",
     "typescript": "^5.7.2"
+  },
+  "overrides": {
+    "fast-xml-parser": "^5.3.4"
   }
 }
